@@ -3299,6 +3299,50 @@ private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private enum AboutPanel {
+    static let applicationName: String = "MLX Audio Lab"
+
+    @MainActor
+    static func show() -> Void {
+        NSApplication.shared.orderFrontStandardAboutPanel(options: aboutOptions())
+    }
+
+    private static func aboutOptions() -> [NSApplication.AboutPanelOptionKey: Any] {
+        [
+            .applicationName: applicationName,
+            .applicationVersion: "Version \(shortVersion) (\(buildVersion))",
+            .credits: credits()
+        ]
+    }
+
+    private static func credits() -> NSAttributedString {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        paragraphStyle.lineSpacing = 3
+
+        return NSAttributedString(
+            string: """
+            Local speech transcription and ASR model comparison for Apple Silicon.
+
+            Audio stays on this Mac. Models are downloaded into the local Hugging Face cache.
+            """,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .paragraphStyle: paragraphStyle
+            ]
+        )
+    }
+
+    private static var shortVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+    }
+
+    private static var buildVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+    }
+}
+
 @main
 struct MLXAudioLabApp: App {
     @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
@@ -3313,5 +3357,12 @@ struct MLXAudioLabApp: App {
             ContentView(model: model)
         }
         .windowStyle(.titleBar)
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About \(AboutPanel.applicationName)") {
+                    AboutPanel.show()
+                }
+            }
+        }
     }
 }
