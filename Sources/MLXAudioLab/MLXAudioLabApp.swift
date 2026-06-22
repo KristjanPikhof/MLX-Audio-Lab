@@ -236,6 +236,7 @@ struct ModelPreparationResult: Sendable {
 }
 
 actor AudioModelTranscriber {
+    private static let sampleRate = 16_000
     private static let safeDecodeChunkDurationSeconds: Float = 30
 
     private var loadedModels: [String: any STTGenerationModel] = [:]
@@ -257,45 +258,87 @@ actor AudioModelTranscriber {
     func transcribe(
         audioURL: URL,
         audioSeconds: Double,
-        using option: AudioModelOption
+        using option: AudioModelOption,
+        onPartialTranscript: (@Sendable (String) async -> Void)? = nil
     ) async throws -> TranscriptionResult {
         ProbeLog.write(
             "transcribe begin repo=\(option.repoID) audio=\(audioURL.lastPathComponent) audioSeconds=\(audioSeconds)"
         )
         let totalStart = ContinuousClock.now
+        try Task.checkCancellation()
 
         let audioLoadStart = ContinuousClock.now
         ProbeLog.write("audio load begin")
-        let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16_000)
+        let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: Self.sampleRate)
         let audioLoadSeconds = Self.seconds(since: audioLoadStart)
-        ProbeLog.write("audio load complete seconds=\(audioLoadSeconds)")
+        let totalSamples = audio.shape[0]
+        guard totalSamples > 0 else {
+            throw Self.makeError("The selected audio file has no readable samples.")
+        }
+        ProbeLog.write("audio load complete seconds=\(audioLoadSeconds) samples=\(totalSamples)")
+        try Task.checkCancellation()
 
         let modelLoadStart = ContinuousClock.now
         let wasLoaded = loadedModels[option.id] != nil
         let loadedModel = try await loadedModel(for: option)
         let modelLoadSeconds = Self.seconds(since: modelLoadStart)
+        try Task.checkCancellation()
 
         let generationStart = ContinuousClock.now
         let parameters = generationParameters(for: loadedModel, option: option)
-        ProbeLog.write("generation begin repo=\(option.repoID) chunkSeconds=\(parameters.chunkDuration)")
-        let output = loadedModel.generate(
-            audio: audio,
-            generationParameters: parameters
+        let chunkSamples = Self.chunkSampleCount(for: parameters)
+        let totalChunks = Int(ceil(Double(totalSamples) / Double(chunkSamples)))
+        ProbeLog.write(
+            "generation begin repo=\(option.repoID) chunkSeconds=\(parameters.chunkDuration) chunks=\(totalChunks)"
         )
+        var transcriptParts: [String] = []
+        var modelReportedSeconds = 0.0
+
+        for chunkIndex in 0..<totalChunks {
+            try Task.checkCancellation()
+
+            let startSample = chunkIndex * chunkSamples
+            let endSample = min(startSample + chunkSamples, totalSamples)
+            let chunkAudio = audio[startSample..<endSample]
+            let chunkDurationSeconds = Double(endSample - startSample) / Double(Self.sampleRate)
+            ProbeLog.write(
+                "generation chunk begin repo=\(option.repoID) index=\(chunkIndex + 1)/\(totalChunks) durationSeconds=\(chunkDurationSeconds)"
+            )
+
+            let output = loadedModel.generate(
+                audio: chunkAudio,
+                generationParameters: parameters
+            )
+            try Task.checkCancellation()
+
+            let chunkText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !chunkText.isEmpty {
+                transcriptParts.append(chunkText)
+            }
+            modelReportedSeconds += output.totalTime
+
+            let partialTranscript = transcriptParts.joined(separator: " ")
+            await onPartialTranscript?(partialTranscript)
+            ProbeLog.write(
+                "generation chunk complete repo=\(option.repoID) index=\(chunkIndex + 1)/\(totalChunks) textLength=\(output.text.count)"
+            )
+        }
+
+        let transcript = transcriptParts.joined(separator: " ")
         let generationSeconds = Self.seconds(since: generationStart)
-        ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(output.text.count)")
+        ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(transcript.count)")
 
         let metrics = TranscriptionMetrics(
             audioSeconds: audioSeconds,
             audioLoadSeconds: audioLoadSeconds,
             modelLoadSeconds: modelLoadSeconds,
             generationSeconds: generationSeconds,
-            modelReportedSeconds: output.totalTime,
+            modelReportedSeconds: modelReportedSeconds,
             totalSeconds: Self.seconds(since: totalStart),
             wasModelAlreadyLoaded: wasLoaded
         )
 
-        let result = TranscriptionResult(text: output.text, metrics: metrics)
+        let result = TranscriptionResult(text: transcript, metrics: metrics)
         ProbeLog.write("transcribe complete totalSeconds=\(metrics.totalSeconds)")
         return result
     }
@@ -347,6 +390,21 @@ actor AudioModelTranscriber {
         return Double(duration.components.seconds) +
             Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
     }
+
+    private static func chunkSampleCount(for parameters: STTGenerateParameters) -> Int {
+        let chunkDuration = parameters.chunkDuration > 0
+            ? Double(parameters.chunkDuration)
+            : Double(safeDecodeChunkDurationSeconds)
+        return max(1, Int(chunkDuration * Double(sampleRate)))
+    }
+
+    private static func makeError(_ message: String) -> NSError {
+        NSError(
+            domain: "MLXAudioLab",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
 }
 
 @MainActor
@@ -354,6 +412,7 @@ actor AudioModelTranscriber {
 final class ProbeViewModel {
     var isRecording = false
     var isTranscribing = false
+    var isCancellingTranscription = false
     var isPreparingModel = false
     var isImportingAudio = false
     var isProcessingImport = false
@@ -394,6 +453,7 @@ final class ProbeViewModel {
 
     var primaryButtonTitle: String {
         if isRecording { return "Stop" }
+        if isCancellingTranscription { return "Cancelling..." }
         if isTranscribing || isProcessingImport { return "Working..." }
         return "Record"
     }
@@ -501,6 +561,10 @@ final class ProbeViewModel {
             && !isDeletingModel
             && currentSample != nil
             && selectedModelCanRecord
+    }
+
+    var canCancelTranscription: Bool {
+        isTranscribing && !isCancellingTranscription
     }
 
     var runSelectedModelDisabledText: String {
@@ -674,6 +738,16 @@ final class ProbeViewModel {
         startTranscription(sample: sample, option: selectedModel)
     }
 
+    func cancelTranscription() {
+        guard isTranscribing else { return }
+
+        isCancellingTranscription = true
+        status = "Cancelling transcription..."
+        errorMessage = nil
+        transcriptionTask?.cancel()
+        ProbeLog.write("transcription cancel requested")
+    }
+
     func startRecording() {
         guard selectedModelCanRecord else {
             status = "Download the selected model before recording"
@@ -763,6 +837,7 @@ final class ProbeViewModel {
     private func startTranscription(sample: AudioSample, option: AudioModelOption) {
         status = "Transcribing with \(option.displayName)..."
         isTranscribing = true
+        isCancellingTranscription = false
         errorMessage = nil
         transcript = ""
         metrics = TranscriptionMetrics()
@@ -774,6 +849,10 @@ final class ProbeViewModel {
                     audioURL: sample.url,
                     audioSeconds: sample.durationSeconds,
                     using: option
+                ) { partialTranscript in
+                    await MainActor.run {
+                        self.transcript = partialTranscript
+                    }
                 )
                 self.loadedModelIDs.insert(option.id)
                 self.refreshModelAvailability()
@@ -781,12 +860,18 @@ final class ProbeViewModel {
                 self.metrics = result.metrics
                 self.status = result.text.isEmpty ? "Finished with empty output" : "Finished"
                 ProbeLog.write("ui updated with transcription")
+            } catch is CancellationError {
+                self.status = "Cancelled"
+                self.errorMessage = nil
+                ProbeLog.write("transcription cancelled")
             } catch {
                 self.status = "Transcription failed"
                 self.errorMessage = Self.describe(error)
                 ProbeLog.write("transcription failed", error: error)
             }
+            self.isCancellingTranscription = false
             self.isTranscribing = false
+            self.transcriptionTask = nil
         }
     }
 
@@ -1307,14 +1392,28 @@ struct SampleControlPanel: View {
             .accessibilityLabel(model.isRecording ? "Stop recording" : "Start recording")
 
             HStack(spacing: 10) {
-                Button {
-                    model.runSelectedModelForCurrentSample()
-                } label: {
-                    Label("Run", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
+                if model.isTranscribing {
+                    Button {
+                        model.cancelTranscription()
+                    } label: {
+                        Label(model.isCancellingTranscription ? "Cancelling..." : "Cancel", systemImage: "xmark.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .labButtonStyle(prominent: true)
+                    .tint(.orange)
+                    .disabled(!model.canCancelTranscription)
+                    .accessibilityLabel("Cancel transcription")
+                    .help("Cancel transcription after the current decode chunk finishes")
+                } else {
+                    Button {
+                        model.runSelectedModelForCurrentSample()
+                    } label: {
+                        Label("Run", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .labButtonStyle(prominent: true)
+                    .disabled(!model.canRunSelectedModel)
                 }
-                .labButtonStyle(prominent: true)
-                .disabled(!model.canRunSelectedModel)
 
                 Button {
                     model.clearOutput()
@@ -1323,7 +1422,13 @@ struct SampleControlPanel: View {
                         .frame(width: 28)
                 }
                 .labButtonStyle()
-                .disabled(model.isRecording || model.isTranscribing || model.isPreparingModel)
+                .disabled(
+                    model.isRecording
+                        || model.isTranscribing
+                        || model.isPreparingModel
+                        || model.isProcessingImport
+                        || model.isDeletingModel
+                )
                 .help("Clear sample and output")
             }
 
@@ -1454,14 +1559,17 @@ struct TranscriptWorkspace: View {
         if model.isProcessingImport { return "Importing" }
         if model.isPreparingModel { return "Preparing model" }
         if model.isDeletingModel { return "Deleting model" }
+        if model.isCancellingTranscription { return "Cancelling" }
         if model.isTranscribing { return "Transcribing" }
         if model.errorMessage != nil { return "Needs attention" }
         if model.status.localizedCaseInsensitiveContains("finished") { return "Finished" }
+        if model.status.localizedCaseInsensitiveContains("cancelled") { return "Cancelled" }
         return "Ready"
     }
 
     private var statusSymbol: String {
         if model.isRecording { return "record.circle.fill" }
+        if model.status.localizedCaseInsensitiveContains("cancelled") { return "xmark.circle.fill" }
         if model.errorMessage != nil { return "exclamationmark.triangle.fill" }
         return "checkmark.circle.fill"
     }
@@ -1474,7 +1582,11 @@ struct TranscriptWorkspace: View {
     }
 
     private var statusShowsProgress: Bool {
-        model.isTranscribing || model.isPreparingModel || model.isProcessingImport || model.isDeletingModel
+        model.isTranscribing
+            || model.isCancellingTranscription
+            || model.isPreparingModel
+            || model.isProcessingImport
+            || model.isDeletingModel
     }
 
     private func formatSeconds(_ seconds: Double) -> String {
