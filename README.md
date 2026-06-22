@@ -4,7 +4,7 @@ Minimal macOS SwiftUI app for testing different MLX audio models locally on
 macOS and comparing their transcription performance.
 
 The goal is to provide a small local benchmark lab for MLX audio models: pick a
-model, download it from Hugging Face when needed, record or import a WAV sample,
+model, download it from Hugging Face when needed, record audio or import media,
 and compare model load and generation speed. More compatible MLX audio models
 will be added soon.
 
@@ -57,14 +57,21 @@ Click **Record**, speak, then click **Stop**. The recording is kept as the
 current audio sample for this app session and is transcribed with the selected
 model.
 
-Click **Import WAV** to copy a `.wav` file into the app's temporary session
-folder. Imported files are not transcribed automatically; click **Run Selected
-Model** when you are ready.
+Click **Import Media** to select an audio or video file. The app extracts the
+audio into a temporary session WAV before running the model. Imported files are
+not transcribed automatically; click **Run Selected Model** when you are ready.
+
+Current import targets are Apple-decoded audio/video media, including `.wav`,
+`.mp3`, `.m4a`, `.aac`, `.mp4`, `.m4v`, `.mov`, `.aiff`, and `.caf` when the
+file contains a readable audio track. Video files are used for audio only.
 
 Use the model picker to switch models. The selected row shows whether the model
 is already available on the computer or whether it still needs to be downloaded.
 After switching models, click **Run Selected Model** to regenerate output from
 the current audio sample.
+
+Use the small trash button next to the model picker to delete the selected
+downloaded model from the local Hugging Face cache.
 
 ## Local files
 
@@ -74,7 +81,7 @@ the current audio sample.
 | App icon | `Assets/AppIcon.svg`, `Sources/MLXAudioLab/Resources/AppIcon.icns` | Safe to commit. |
 | Build output | `.derivedData/`, `.build/`, `.run/`, `*.app` | Ignored by `.gitignore`. |
 | Runtime logs | `~/Library/Caches/MLXAudioLab/` | Local only; do not commit. |
-| Temporary audio | macOS temporary directory | Recorded/imported samples are session-only and deleted when cleared, replaced, or on next launch. |
+| Temporary audio | macOS temporary directory | Recorded/imported media is converted to session-only WAV and deleted when cleared, replaced, or on next launch. |
 | Model cache | `~/.cache/huggingface/hub/mlx-audio/` | Local only; large downloads are not part of the repo. |
 
 The app does not require API keys. It does not write transcript text to its logs.

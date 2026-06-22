@@ -97,6 +97,20 @@ enum ModelCache {
         return .available
     }
 
+    static func delete(_ option: AudioModelOption) throws {
+        let directory = directory(for: option)
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return
+        }
+
+        try fileManager.removeItem(at: directory)
+    }
+
     private static func containsNonEmptyFile(withExtension fileExtension: String, in directory: URL) -> Bool {
         guard let enumerator = FileManager.default.enumerator(
             at: directory,
@@ -131,7 +145,7 @@ enum AudioSampleSource: String, Sendable {
         case .recorded:
             return "Recorded sample"
         case .imported:
-            return "Imported WAV"
+            return "Imported media"
         }
     }
 
@@ -234,6 +248,10 @@ actor AudioModelTranscriber {
         return ModelPreparationResult(modelLoadSeconds: seconds, wasModelAlreadyLoaded: wasLoaded)
     }
 
+    func unloadModel(id: String) {
+        loadedModels[id] = nil
+    }
+
     func transcribe(
         audioURL: URL,
         audioSeconds: Double,
@@ -332,6 +350,9 @@ final class ProbeViewModel {
     var isTranscribing = false
     var isPreparingModel = false
     var isImportingAudio = false
+    var isProcessingImport = false
+    var isDeletingModel = false
+    var isConfirmingModelDeletion = false
     var selectedModelID = AudioModelOption.supported[0].id {
         didSet {
             guard oldValue != selectedModelID else { return }
@@ -361,25 +382,29 @@ final class ProbeViewModel {
         refreshModelAvailability(updateStatus: true)
     }
 
+    nonisolated static var supportedImportContentTypes: [UTType] {
+        [.audio, .movie]
+    }
+
     var primaryButtonTitle: String {
         if isRecording { return "Stop" }
-        if isTranscribing { return "Working..." }
+        if isTranscribing || isProcessingImport { return "Working..." }
         return "Record"
     }
 
     var canPressPrimaryButton: Bool {
         if isRecording {
-            return !isPreparingModel && !isTranscribing
+            return !isPreparingModel && !isTranscribing && !isProcessingImport && !isDeletingModel
         }
-        return !isTranscribing && !isPreparingModel && selectedModelCanRecord
+        return !isTranscribing && !isPreparingModel && !isProcessingImport && !isDeletingModel && selectedModelCanRecord
     }
 
     var modelControlsDisabled: Bool {
-        isRecording || isTranscribing || isPreparingModel
+        isRecording || isTranscribing || isPreparingModel || isProcessingImport || isDeletingModel
     }
 
     var canImportAudio: Bool {
-        !isRecording && !isTranscribing && !isPreparingModel
+        !isRecording && !isTranscribing && !isPreparingModel && !isProcessingImport && !isDeletingModel
     }
 
     var selectedModel: AudioModelOption {
@@ -454,17 +479,27 @@ final class ProbeViewModel {
         !modelControlsDisabled && !selectedModelIsLoaded
     }
 
+    var canDeleteSelectedModel: Bool {
+        !modelControlsDisabled && (selectedModelIsLoaded || selectedModelAvailability != .notDownloaded)
+    }
+
     var selectedModelCanRecord: Bool {
         selectedModelIsLoaded || selectedModelAvailability == .available
     }
 
     var canRunSelectedModel: Bool {
-        !isRecording && !isTranscribing && !isPreparingModel && currentSample != nil && selectedModelCanRecord
+        !isRecording
+            && !isTranscribing
+            && !isPreparingModel
+            && !isProcessingImport
+            && !isDeletingModel
+            && currentSample != nil
+            && selectedModelCanRecord
     }
 
     var runSelectedModelDisabledText: String {
         if currentSample == nil {
-            return "Record or import a WAV first"
+            return "Record or import media first"
         }
         if !selectedModelCanRecord {
             return "Download the selected model before running"
@@ -474,7 +509,7 @@ final class ProbeViewModel {
 
     var currentSampleDescription: String {
         guard let currentSample else {
-            return "Record or import a WAV first"
+            return "Record or import media first"
         }
 
         return "\(currentSample.source.displayName) · \(currentSample.displayName) · \(Self.formatSeconds(currentSample.durationSeconds))"
@@ -522,19 +557,29 @@ final class ProbeViewModel {
                 return
             }
 
-            do {
-                let sample = try importAudioSample(from: sourceURL)
-                replaceCurrentSample(with: sample)
-                transcript = ""
-                metrics = TranscriptionMetrics()
-                recordingElapsedSeconds = 0
-                errorMessage = nil
-                status = "Ready to run"
-                ProbeLog.write("audio import complete file=\(sample.url.lastPathComponent) seconds=\(sample.durationSeconds)")
-            } catch {
-                status = "Import failed"
-                errorMessage = Self.describe(error)
-                ProbeLog.write("audio import failed file=\(sourceURL.lastPathComponent)", error: error)
+            status = "Importing media..."
+            errorMessage = nil
+            isProcessingImport = true
+
+            Task {
+                do {
+                    let sample = try await Self.importAudioSample(from: sourceURL)
+                    replaceCurrentSample(with: sample)
+                    transcript = ""
+                    metrics = TranscriptionMetrics()
+                    recordingElapsedSeconds = 0
+                    errorMessage = nil
+                    status = "Ready to run"
+                    ProbeLog.write(
+                        "audio import complete file=\(sample.url.lastPathComponent) seconds=\(sample.durationSeconds)"
+                    )
+                } catch {
+                    status = "Import failed"
+                    errorMessage = Self.describe(error)
+                    ProbeLog.write("audio import failed file=\(sourceURL.lastPathComponent)", error: error)
+                }
+
+                isProcessingImport = false
             }
         case .failure(let error):
             status = "Import failed"
@@ -572,9 +617,44 @@ final class ProbeViewModel {
         }
     }
 
+    func requestDeleteSelectedModel() {
+        guard canDeleteSelectedModel else { return }
+        isConfirmingModelDeletion = true
+    }
+
+    func deleteSelectedModel() {
+        guard canDeleteSelectedModel else { return }
+
+        let option = selectedModel
+        isDeletingModel = true
+        errorMessage = nil
+        status = "Deleting \(option.displayName)..."
+        ProbeLog.write("model delete requested repo=\(option.repoID)")
+
+        Task {
+            do {
+                await transcriber.unloadModel(id: option.id)
+                try await Task.detached(priority: .userInitiated) {
+                    try ModelCache.delete(option)
+                }.value
+
+                loadedModelIDs.remove(option.id)
+                refreshModelAvailability()
+                status = "\(option.displayName) deleted"
+                ProbeLog.write("model delete complete repo=\(option.repoID)")
+            } catch {
+                status = "Model delete failed"
+                errorMessage = Self.describe(error)
+                ProbeLog.write("model delete failed repo=\(option.repoID)", error: error)
+            }
+
+            isDeletingModel = false
+        }
+    }
+
     func runSelectedModelForCurrentSample() {
         guard let sample = currentSample else {
-            status = "Record or import a WAV first"
+            status = "Record or import media first"
             errorMessage = nil
             return
         }
@@ -728,11 +808,7 @@ final class ProbeViewModel {
         }
     }
 
-    private func importAudioSample(from sourceURL: URL) throws -> AudioSample {
-        guard sourceURL.pathExtension.lowercased() == "wav" else {
-            throw Self.makeError("Only WAV files can be imported.")
-        }
-
+    private nonisolated static func importAudioSample(from sourceURL: URL) async throws -> AudioSample {
         let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if didStartAccessing {
@@ -749,10 +825,10 @@ final class ProbeViewModel {
         }
 
         do {
-            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            try await convertMediaToWAV(from: sourceURL, to: destinationURL)
             let durationSeconds = try Self.audioDurationSeconds(for: destinationURL)
             guard durationSeconds > 0 else {
-                throw Self.makeError("The selected WAV file has no readable audio.")
+                throw Self.makeError("The selected media file has no readable audio.")
             }
 
             return AudioSample(
@@ -766,6 +842,85 @@ final class ProbeViewModel {
         } catch {
             try? FileManager.default.removeItem(at: destinationURL)
             throw error
+        }
+    }
+
+    private nonisolated static func convertMediaToWAV(from sourceURL: URL, to destinationURL: URL) async throws {
+        let asset = AVURLAsset(url: sourceURL)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !audioTracks.isEmpty else {
+            throw makeError("The selected file does not contain a readable audio track.")
+        }
+
+        try writeAudioTracksToWAV(asset: asset, audioTracks: audioTracks, destinationURL: destinationURL)
+    }
+
+    private nonisolated static func writeAudioTracksToWAV(
+        asset: AVAsset,
+        audioTracks: [AVAssetTrack],
+        destinationURL: URL
+    ) throws {
+        let audioSettings = wavConversionSettings()
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: audioSettings)
+        output.alwaysCopiesSampleData = false
+
+        guard reader.canAdd(output) else {
+            throw makeError("This media file's audio track cannot be prepared for conversion.")
+        }
+        reader.add(output)
+
+        let writer = try AVAssetWriter(outputURL: destinationURL, fileType: .wav)
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+        input.expectsMediaDataInRealTime = false
+
+        guard writer.canAdd(input) else {
+            throw makeError("The WAV writer could not be configured for this media file.")
+        }
+        writer.add(input)
+
+        guard writer.startWriting() else {
+            throw writer.error ?? makeError("The WAV writer failed to start.")
+        }
+
+        guard reader.startReading() else {
+            writer.cancelWriting()
+            throw reader.error ?? makeError("The selected media file could not be read.")
+        }
+
+        writer.startSession(atSourceTime: .zero)
+
+        while reader.status == .reading {
+            if input.isReadyForMoreMediaData {
+                guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                    break
+                }
+
+                guard input.append(sampleBuffer) else {
+                    reader.cancelReading()
+                    writer.cancelWriting()
+                    throw writer.error ?? makeError("The selected media file could not be converted to WAV.")
+                }
+            } else {
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+
+        input.markAsFinished()
+
+        if reader.status == .failed || reader.status == .cancelled {
+            writer.cancelWriting()
+            throw reader.error ?? makeError("The selected media file could not be read.")
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        writer.finishWriting {
+            semaphore.signal()
+        }
+        semaphore.wait()
+
+        guard writer.status == .completed else {
+            throw writer.error ?? makeError("The selected media file could not be converted to WAV.")
         }
     }
 
@@ -815,7 +970,7 @@ final class ProbeViewModel {
         return directory.appending(path: "recording-\(UUID().uuidString).wav")
     }
 
-    private static func cleanupTemporaryAudioFiles() {
+    private nonisolated static func cleanupTemporaryAudioFiles() {
         let directory = recordingDirectory()
         guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
             return
@@ -826,23 +981,35 @@ final class ProbeViewModel {
         }
     }
 
-    private static func recordingDirectory() -> URL {
+    private nonisolated static func recordingDirectory() -> URL {
         FileManager.default.temporaryDirectory.appending(path: "MLXAudioLabRecordings", directoryHint: .isDirectory)
     }
 
-    private static func audioDurationSeconds(for url: URL) throws -> Double {
+    private nonisolated static func audioDurationSeconds(for url: URL) throws -> Double {
         let audioFile = try AVAudioFile(forReading: url)
         let sampleRate = audioFile.fileFormat.sampleRate
         guard sampleRate > 0 else {
-            throw makeError("The selected WAV file has an invalid sample rate.")
+            throw makeError("The selected media file has an invalid sample rate.")
         }
 
         let durationSeconds = Double(audioFile.length) / sampleRate
         guard durationSeconds.isFinite, durationSeconds > 0 else {
-            throw makeError("The selected WAV file has no readable audio.")
+            throw makeError("The selected media file has no readable audio.")
         }
 
         return durationSeconds
+    }
+
+    private nonisolated static func wavConversionSettings() -> [String: Any] {
+        [
+            AVFormatIDKey: Int(kAudioFormatLinearPCM),
+            AVSampleRateKey: 16_000.0,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
     }
 
     private nonisolated static func requestMicrophoneAccess() async -> Bool {
@@ -913,13 +1080,25 @@ struct ContentView: View {
         }
         .fileImporter(
             isPresented: $model.isImportingAudio,
-            allowedContentTypes: [.wav],
+            allowedContentTypes: ProbeViewModel.supportedImportContentTypes,
             allowsMultipleSelection: false
         ) { result in
             model.handleImportedAudio(result)
         }
-        .fileDialogMessage("Select a WAV file for local MLX audio testing.")
-        .fileDialogConfirmationLabel("Import WAV")
+        .fileDialogMessage("Select an audio or video file. The app will extract audio into a temporary WAV sample.")
+        .fileDialogConfirmationLabel("Import Media")
+        .confirmationDialog(
+            "Delete downloaded model?",
+            isPresented: $model.isConfirmingModelDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete \(model.selectedModel.displayName)", role: .destructive) {
+                model.deleteSelectedModel()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the selected model from the local Hugging Face cache. It does not delete recordings or imported samples.")
+        }
     }
 
     private var workspace: some View {
@@ -1003,7 +1182,7 @@ struct BrandHeader: View {
 
             HStack(spacing: 8) {
                 Label("Local", systemImage: "lock")
-                Label("WAV", systemImage: "waveform")
+                Label("Media", systemImage: "waveform")
                 Label("MLX", systemImage: "apple.terminal")
             }
             .font(.caption.weight(.medium))
@@ -1022,13 +1201,25 @@ struct ModelSetupPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             SectionHeader(title: "Model", symbol: "cpu")
 
-            Picker("Model", selection: $model.selectedModelID) {
-                ForEach(AudioModelOption.supported) { option in
-                    Text(option.displayName).tag(option.id)
+            HStack(spacing: 10) {
+                Picker("Model", selection: $model.selectedModelID) {
+                    ForEach(AudioModelOption.supported) { option in
+                        Text(option.displayName).tag(option.id)
+                    }
                 }
+                .labelsHidden()
+                .disabled(model.modelControlsDisabled)
+
+                Button {
+                    model.requestDeleteSelectedModel()
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 28)
+                }
+                .labButtonStyle()
+                .disabled(!model.canDeleteSelectedModel)
+                .help("Delete selected model from the local Hugging Face cache")
             }
-            .labelsHidden()
-            .disabled(model.modelControlsDisabled)
 
             VStack(alignment: .leading, spacing: 8) {
                 Label(model.selectedModelStatusText, systemImage: model.selectedModelStatusIcon)
@@ -1133,7 +1324,7 @@ struct SampleControlPanel: View {
             Button {
                 model.beginImportAudio()
             } label: {
-                Label("Import WAV", systemImage: "square.and.arrow.down")
+                Label(model.isProcessingImport ? "Importing..." : "Import Media", systemImage: "square.and.arrow.down")
                     .frame(maxWidth: .infinity)
             }
             .labButtonStyle()

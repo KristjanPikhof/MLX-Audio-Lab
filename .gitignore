@@ -16,6 +16,15 @@ DerivedData/
 nemotron-probe*.log
 **/nemotron-probe*.log
 *.wav
+*.mp3
+*.mp4
+*.m4a
+*.m4v
+*.mov
+*.aac
+*.aiff
+*.aif
+*.caf
 
 # Xcode user state
 xcuserdata/
