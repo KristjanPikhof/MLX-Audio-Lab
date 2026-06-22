@@ -722,9 +722,9 @@ final class ProbeViewModel {
         case .available:
             return "Ready"
         case .notDownloaded:
-            return "Download the selected model before recording"
+            return "Download the selected model before recording or running"
         case .incomplete:
-            return "Repair the selected model cache before recording"
+            return "Repair the selected model cache before recording or running"
         }
     }
 
