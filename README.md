@@ -131,7 +131,9 @@ the current audio sample.
 When a model is downloading, a progress banner appears at the top of the
 window with the model name, percentage, downloaded bytes, and a linear progress
 bar. App-managed downloads use the Hugging Face LFS transfer path so the banner
-can update while large model files are still downloading.
+can update while large model files are still downloading. If a model already
+exists in the standard Hugging Face cache, the app copies it into the
+`mlx-audio` folder with chunked copy progress instead of a silent file copy.
 
 The transcript panel has a **Follow** checkbox, enabled by default, to keep the
 latest generated text in view while transcription is running.

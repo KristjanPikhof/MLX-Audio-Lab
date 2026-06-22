@@ -486,11 +486,47 @@ struct ModelDownloadProgress: Equatable, Sendable {
     }
 }
 
-private final class ModelDownloadProgressBox: @unchecked Sendable {
-    let progress: Progress
+private final class ModelDownloadProgressState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let modelName: String
+    private let totalBytes: Int64
+    private var completedBytes: Int64 = 0
+    private var currentProgress: Progress?
+    private var currentExpectedBytes: Int64 = 0
 
-    init(_ progress: Progress) {
-        self.progress = progress
+    init(modelName: String, totalBytes: Int64) {
+        self.modelName = modelName
+        self.totalBytes = totalBytes
+    }
+
+    func beginFile(expectedBytes: Int64, progress: Progress) {
+        lock.lock()
+        currentExpectedBytes = max(expectedBytes, 0)
+        currentProgress = progress
+        lock.unlock()
+    }
+
+    func completeFile(expectedBytes: Int64) {
+        lock.lock()
+        completedBytes += max(expectedBytes, 0)
+        currentExpectedBytes = 0
+        currentProgress = nil
+        lock.unlock()
+    }
+
+    func snapshot() -> ModelDownloadProgress {
+        lock.lock()
+        let currentBytes = min(
+            max(currentProgress?.completedUnitCount ?? 0, 0),
+            currentExpectedBytes
+        )
+        let snapshot = ModelDownloadProgress(
+            modelName: modelName,
+            completedBytes: completedBytes + currentBytes,
+            totalBytes: totalBytes
+        )
+        lock.unlock()
+        return snapshot
     }
 }
 
@@ -721,38 +757,51 @@ actor AudioModelTranscriber {
         let totalBytes = entries.reduce(Int64(0)) { partial, entry in
             partial + max(Int64(entry.size ?? 1), 1)
         }
-        let progress = Progress(totalUnitCount: max(totalBytes, 1))
+        let progressState = ModelDownloadProgressState(
+            modelName: option.displayName,
+            totalBytes: max(totalBytes, 1)
+        )
         let progressSampler = startModelProgressSampler(
-            progress: progress,
-            option: option,
+            state: progressState,
             onDownloadProgress: onDownloadProgress
         )
 
-        await emit(progress: progress, option: option, onDownloadProgress: onDownloadProgress)
+        await emit(state: progressState, onDownloadProgress: onDownloadProgress)
 
         do {
             for entry in entries {
                 try Task.checkCancellation()
 
                 let fileBytes = max(Int64(entry.size ?? 1), 1)
-                let fileProgress = Progress(
-                    totalUnitCount: fileBytes,
-                    parent: progress,
-                    pendingUnitCount: fileBytes
-                )
+                let fileProgress = Progress(totalUnitCount: fileBytes)
+                progressState.beginFile(expectedBytes: fileBytes, progress: fileProgress)
                 let destination = modelDirectory.appending(path: entry.path)
 
-                _ = try await client.downloadFile(
-                    entry,
-                    from: repoID,
-                    to: destination,
+                if let cachedPath = client.cache?.cachedFilePath(
+                    repo: repoID,
                     kind: .model,
                     revision: "main",
-                    progress: fileProgress,
-                    transport: .lfs
-                )
+                    filename: entry.path
+                ) {
+                    try await copyFileWithProgress(
+                        from: cachedPath,
+                        to: destination,
+                        progress: fileProgress
+                    )
+                } else {
+                    _ = try await client.downloadFile(
+                        entry,
+                        from: repoID,
+                        to: destination,
+                        kind: .model,
+                        revision: "main",
+                        progress: fileProgress,
+                        transport: .lfs
+                    )
+                }
                 fileProgress.completedUnitCount = fileProgress.totalUnitCount
-                await emit(progress: progress, option: option, onDownloadProgress: onDownloadProgress)
+                progressState.completeFile(expectedBytes: fileBytes)
+                await emit(state: progressState, onDownloadProgress: onDownloadProgress)
             }
         } catch {
             await stopDownloadProgressSampler(progressSampler)
@@ -761,8 +810,7 @@ actor AudioModelTranscriber {
 
         await stopDownloadProgressSampler(progressSampler)
 
-        progress.completedUnitCount = progress.totalUnitCount
-        await emit(progress: progress, option: option, onDownloadProgress: onDownloadProgress)
+        await emit(state: progressState, onDownloadProgress: onDownloadProgress)
 
         guard ModelCache.availability(for: option) == .available else {
             throw Self.makeError("The model download finished, but required files are still missing.")
@@ -804,23 +852,61 @@ actor AudioModelTranscriber {
             }
     }
 
+    private func copyFileWithProgress(
+        from source: URL,
+        to destination: URL,
+        progress: Progress
+    ) async throws {
+        let fileManager = FileManager.default
+        let resolvedSource = source.resolvingSymlinksInPath()
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let temporaryDestination = destination
+            .deletingLastPathComponent()
+            .appending(path: ".\(destination.lastPathComponent).partial-\(UUID().uuidString)")
+        fileManager.createFile(atPath: temporaryDestination.path, contents: nil)
+
+        let input = try FileHandle(forReadingFrom: resolvedSource)
+        let output = try FileHandle(forWritingTo: temporaryDestination)
+        var didFinish = false
+        defer {
+            try? input.close()
+            try? output.close()
+            if !didFinish {
+                try? fileManager.removeItem(at: temporaryDestination)
+            }
+        }
+
+        while true {
+            try Task.checkCancellation()
+            guard let data = try input.read(upToCount: 1024 * 1024),
+                  !data.isEmpty
+            else {
+                break
+            }
+
+            try output.write(contentsOf: data)
+            progress.completedUnitCount += Int64(data.count)
+            await Task.yield()
+        }
+
+        try? fileManager.removeItem(at: destination)
+        try fileManager.moveItem(at: temporaryDestination, to: destination)
+        didFinish = true
+    }
+
     private func startModelProgressSampler(
-        progress: Progress,
-        option: AudioModelOption,
+        state: ModelDownloadProgressState,
         onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
     ) -> Task<Void, Never>? {
         guard let onDownloadProgress else { return nil }
 
-        let progressBox = ModelDownloadProgressBox(progress)
-        return Task.detached(priority: .utility) { [option, onDownloadProgress, progressBox] in
+        return Task.detached(priority: .utility) { [onDownloadProgress, state] in
             while !Task.isCancelled {
-                await onDownloadProgress(
-                    ModelDownloadProgress(
-                        modelName: option.displayName,
-                        progress: progressBox.progress,
-                        fallbackTotalBytes: option.downloadSizeBytes
-                    )
-                )
+                await onDownloadProgress(state.snapshot())
 
                 try? await Task.sleep(for: .milliseconds(100))
             }
@@ -828,17 +914,10 @@ actor AudioModelTranscriber {
     }
 
     private func emit(
-        progress: Progress,
-        option: AudioModelOption,
+        state: ModelDownloadProgressState,
         onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
     ) async {
-        await onDownloadProgress?(
-            ModelDownloadProgress(
-                modelName: option.displayName,
-                progress: progress,
-                fallbackTotalBytes: option.downloadSizeBytes
-            )
-        )
+        await onDownloadProgress?(state.snapshot())
     }
 
     private func startDownloadProgressSampler(
