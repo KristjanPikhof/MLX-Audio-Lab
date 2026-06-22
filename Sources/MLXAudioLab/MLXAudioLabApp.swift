@@ -2452,7 +2452,7 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: model.modelDownloadProgress != nil)
-        .frame(minWidth: 1120, minHeight: 775)
+        .frame(minWidth: 1120, minHeight: 820)
         .onAppear {
             model.refreshModelAvailability(updateStatus: true)
         }
