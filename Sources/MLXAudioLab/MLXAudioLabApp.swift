@@ -2818,42 +2818,50 @@ struct TranscriptWorkspace: View {
     }
 
     private var workspaceHeader: some View {
-        HStack(alignment: .center, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Transcript")
                     .font(.system(size: 30, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
                 Text(model.selectedModel.displayName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .truncationMode(.tail)
+                    .truncationMode(.middle)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer()
+            HStack(alignment: .center, spacing: 10) {
+                Toggle(isOn: $model.shouldFollowTranscript) {
+                    Label("Follow", systemImage: "arrow.down.to.line")
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+                .help("Follow transcript output while it is generated")
 
-            Toggle(isOn: $model.shouldFollowTranscript) {
-                Label("Follow", systemImage: "arrow.down.to.line")
-            }
-            .toggleStyle(.checkbox)
-            .controlSize(.small)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(.secondary)
-            .fixedSize()
-            .help("Follow transcript output while it is generated")
+                StatusCapsule(
+                    text: statusTitle,
+                    symbol: statusSymbol,
+                    tint: statusTint,
+                    isProgressing: statusShowsProgress
+                )
+                .help(model.status)
 
-            StatusCapsule(
-                text: statusTitle,
-                symbol: statusSymbol,
-                tint: statusTint,
-                isProgressing: statusShowsProgress
-            )
-            .help(model.status)
+                Spacer(minLength: 8)
 
-            if model.isRecording {
-                Text(formatSeconds(model.recordingElapsedSeconds))
-                    .font(.system(.title3, design: .monospaced, weight: .semibold))
-                    .foregroundStyle(.red)
-                    .monospacedDigit()
+                if model.isRecording {
+                    Text(formatSeconds(model.recordingElapsedSeconds))
+                        .font(.system(.title3, design: .monospaced, weight: .semibold))
+                        .foregroundStyle(.red)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
             }
         }
     }
