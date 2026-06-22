@@ -28,7 +28,7 @@ cp "$PWD/Sources/MLXAudioLab/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icn
 
 for bundle in "$PRODUCTS_DIR"/*.bundle; do
   [ -d "$bundle" ] || continue
-  cp -R "$bundle" "$APP_BUNDLE/"
+  cp -R "$bundle" "$APP_RESOURCES/"
 done
 
 METALLIB="$(find "$PRODUCTS_DIR/mlx-swift_Cmlx.bundle" -name default.metallib -print -quit)"
