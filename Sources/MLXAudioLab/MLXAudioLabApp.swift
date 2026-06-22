@@ -1367,12 +1367,9 @@ final class ProbeViewModel {
     var loadedModelIDs: Set<String> = []
     var currentSample: AudioSample?
     var status = "Ready"
+    var hasTranscriptOutput = false
     var transcriptStatistics = TranscriptStatistics.empty
-    var transcript = "" {
-        didSet {
-            transcriptStatistics = TranscriptStatistics.calculate(from: transcript)
-        }
-    }
+    var transcript = ""
     var errorMessage: String?
     var transcriptExportMessage: String?
     var pathActionMessage: String?
@@ -1389,6 +1386,9 @@ final class ProbeViewModel {
     private var timerTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
     private var modelPreparationTask: Task<Void, Never>?
+    private var lastTranscriptStatisticsUpdate = Date.distantPast
+
+    private static let transcriptStatisticsUpdateInterval: TimeInterval = 0.5
 
     init() {
         Self.cleanupTemporaryAudioFiles()
@@ -1540,10 +1540,6 @@ final class ProbeViewModel {
         ModelCache.rootDirectory().path
     }
 
-    var hasTranscriptOutput: Bool {
-        transcriptStatistics.characters > 0
-    }
-
     var canClearOutput: Bool {
         !isRecording && !hasNonRecordingWork
     }
@@ -1554,6 +1550,28 @@ final class ProbeViewModel {
 
     private var hasNonRecordingWork: Bool {
         isStartingRecording || hasRecordingStopBlocker
+    }
+
+    private func setTranscript(_ text: String, refreshStatistics: Bool = false) {
+        transcript = text
+        hasTranscriptOutput = Self.containsVisibleText(text)
+        refreshTranscriptStatistics(force: refreshStatistics || !isTranscribing || !hasTranscriptOutput)
+    }
+
+    private func refreshTranscriptStatistics(force: Bool = false) {
+        let now = Date()
+        guard force || now.timeIntervalSince(lastTranscriptStatisticsUpdate) >= Self.transcriptStatisticsUpdateInterval else {
+            return
+        }
+
+        transcriptStatistics = TranscriptStatistics.calculate(from: transcript)
+        lastTranscriptStatisticsUpdate = now
+    }
+
+    private nonisolated static func containsVisibleText(_ text: String) -> Bool {
+        text.contains { character in
+            !character.isWhitespace
+        }
     }
 
     func primaryButtonPressed() {
@@ -1595,7 +1613,7 @@ final class ProbeViewModel {
                 do {
                     let sample = try await Self.importAudioSample(from: sourceURL)
                     replaceCurrentSample(with: sample)
-                    transcript = ""
+                    setTranscript("", refreshStatistics: true)
                     transcriptExportMessage = nil
                     metrics = TranscriptionMetrics(audioSeconds: sample.durationSeconds)
                     recordingElapsedSeconds = 0
@@ -1746,7 +1764,7 @@ final class ProbeViewModel {
         let option = selectedModel
         ProbeLog.write("record requested")
         errorMessage = nil
-        transcript = ""
+        setTranscript("", refreshStatistics: true)
         transcriptExportMessage = nil
         metrics = TranscriptionMetrics()
         recordingElapsedSeconds = 0
@@ -1836,7 +1854,7 @@ final class ProbeViewModel {
         isTranscribing = true
         isCancellingTranscription = false
         errorMessage = nil
-        transcript = ""
+        setTranscript("", refreshStatistics: true)
         transcriptExportMessage = nil
         metrics = TranscriptionMetrics(audioSeconds: sample.durationSeconds)
 
@@ -1849,7 +1867,7 @@ final class ProbeViewModel {
                     using: option,
                     onPartialTranscript: { partialTranscript in
                         await MainActor.run {
-                            self.transcript = partialTranscript
+                            self.setTranscript(partialTranscript)
                         }
                     },
                     onMetricsUpdate: { updatedMetrics in
@@ -1860,7 +1878,7 @@ final class ProbeViewModel {
                 )
                 self.loadedModelIDs.insert(option.id)
                 self.refreshModelAvailability()
-                self.transcript = result.text
+                self.setTranscript(result.text, refreshStatistics: true)
                 self.metrics = result.metrics
                 self.status = result.text.isEmpty ? "Finished with empty output" : "Finished"
                 ProbeLog.write("ui updated with transcription")
@@ -1881,7 +1899,7 @@ final class ProbeViewModel {
 
     func clearOutput() {
         deleteCurrentSample()
-        transcript = ""
+        setTranscript("", refreshStatistics: true)
         errorMessage = nil
         transcriptExportMessage = nil
         status = idleStatusForSelectedModel()
@@ -2050,14 +2068,14 @@ final class ProbeViewModel {
             throw makeError("The selected file does not contain a readable audio track.")
         }
 
-        try writeAudioTracksToWAV(asset: asset, audioTracks: audioTracks, destinationURL: destinationURL)
+        try await writeAudioTracksToWAV(asset: asset, audioTracks: audioTracks, destinationURL: destinationURL)
     }
 
     private nonisolated static func writeAudioTracksToWAV(
         asset: AVAsset,
         audioTracks: [AVAssetTrack],
         destinationURL: URL
-    ) throws {
+    ) async throws {
         let audioSettings = wavConversionSettings()
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: audioSettings)
@@ -2088,37 +2106,67 @@ final class ProbeViewModel {
 
         writer.startSession(atSourceTime: .zero)
 
-        while reader.status == .reading {
-            if input.isReadyForMoreMediaData {
-                guard let sampleBuffer = output.copyNextSampleBuffer() else {
-                    break
-                }
+        let processingQueue = DispatchQueue(label: "MLXAudioLab.wav-conversion", qos: .userInitiated)
+        try await withCheckedThrowingContinuation { continuation in
+            var didResume = false
 
-                guard input.append(sampleBuffer) else {
-                    reader.cancelReading()
-                    writer.cancelWriting()
-                    throw writer.error ?? makeError("The selected media file could not be converted to WAV.")
+            func complete(_ result: Result<Void, Error>) {
+                guard !didResume else { return }
+                didResume = true
+
+                switch result {
+                case .success:
+                    continuation.resume()
+                case .failure(let error):
+                    continuation.resume(throwing: error)
                 }
-            } else {
-                Thread.sleep(forTimeInterval: 0.001)
             }
-        }
 
-        input.markAsFinished()
+            func completeWriter() {
+                input.markAsFinished()
 
-        if reader.status == .failed || reader.status == .cancelled {
-            writer.cancelWriting()
-            throw reader.error ?? makeError("The selected media file could not be read.")
-        }
+                if reader.status == .failed || reader.status == .cancelled {
+                    writer.cancelWriting()
+                    complete(.failure(reader.error ?? makeError("The selected media file could not be read.")))
+                    return
+                }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        writer.finishWriting {
-            semaphore.signal()
-        }
-        semaphore.wait()
+                writer.finishWriting {
+                    processingQueue.async {
+                        guard writer.status == .completed else {
+                            complete(
+                                .failure(
+                                    writer.error ?? makeError("The selected media file could not be converted to WAV.")
+                                )
+                            )
+                            return
+                        }
 
-        guard writer.status == .completed else {
-            throw writer.error ?? makeError("The selected media file could not be converted to WAV.")
+                        complete(.success(()))
+                    }
+                }
+            }
+
+            input.requestMediaDataWhenReady(on: processingQueue) {
+                while input.isReadyForMoreMediaData {
+                    guard reader.status == .reading else {
+                        completeWriter()
+                        return
+                    }
+
+                    guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                        completeWriter()
+                        return
+                    }
+
+                    guard input.append(sampleBuffer) else {
+                        reader.cancelReading()
+                        writer.cancelWriting()
+                        complete(.failure(writer.error ?? makeError("The selected media file could not be converted to WAV.")))
+                        return
+                    }
+                }
+            }
         }
     }
 
