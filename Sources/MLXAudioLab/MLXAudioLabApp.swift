@@ -196,19 +196,6 @@ enum ModelCache {
         )
     }
 
-    static func downloadedByteCount(for option: AudioModelOption) -> Int64 {
-        let directory = directory(for: option)
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-              isDirectory.boolValue
-        else {
-            return 0
-        }
-
-        return min(byteCount(at: directory, fileManager: fileManager), option.downloadSizeBytes)
-    }
-
     static func availability(for option: AudioModelOption) -> ModelLocalAvailability {
         let directory = directory(for: option)
         let fileManager = FileManager.default
@@ -294,38 +281,6 @@ enum ModelCache {
         return false
     }
 
-    private static func byteCount(at directory: URL, fileManager: FileManager) -> Int64 {
-        let keys: Set<URLResourceKey> = [
-            .fileSizeKey,
-            .isRegularFileKey,
-            .isSymbolicLinkKey
-        ]
-        guard let enumerator = fileManager.enumerator(
-            at: directory,
-            includingPropertiesForKeys: Array(keys),
-            options: []
-        ) else {
-            return 0
-        }
-
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(forKeys: keys),
-                  values.isRegularFile == true || values.isSymbolicLink == true
-            else {
-                continue
-            }
-
-            let sizeURL = values.isSymbolicLink == true
-                ? fileURL.resolvingSymlinksInPath()
-                : fileURL
-            let size = (try? sizeURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            total += Int64(max(size, 0))
-        }
-
-        return total
-    }
-
     private static func expandTilde(_ path: String) -> String {
         NSString(string: path).expandingTildeInPath
     }
@@ -409,9 +364,11 @@ enum ProbeLog {
         }
 
         do {
+            defer {
+                try? handle.close()
+            }
             try handle.seekToEnd()
             try handle.write(contentsOf: data)
-            try handle.close()
         } catch {
             try? handle.close()
         }
@@ -545,46 +502,60 @@ private final class ModelDownloadProgressState: @unchecked Sendable {
 
     func beginFile(expectedBytes: Int64) {
         lock.lock()
+        defer {
+            lock.unlock()
+        }
+
         currentExpectedBytes = max(expectedBytes, 0)
         currentFileBytes = 0
-        lock.unlock()
     }
 
     func completeFile(expectedBytes: Int64) {
         lock.lock()
+        defer {
+            lock.unlock()
+        }
+
         completedBytes += max(expectedBytes, 0)
         currentFileBytes = 0
         currentExpectedBytes = 0
-        lock.unlock()
     }
 
     func updateCurrentExpectedBytes(_ bytes: Int64) {
         guard bytes > 0 else { return }
 
         lock.lock()
+        defer {
+            lock.unlock()
+        }
+
         currentExpectedBytes = max(currentExpectedBytes, bytes)
-        lock.unlock()
     }
 
     func updateCurrentFileBytes(_ bytes: Int64) {
         lock.lock()
+        defer {
+            lock.unlock()
+        }
+
         currentFileBytes = max(currentFileBytes, bytes)
-        lock.unlock()
     }
 
     func snapshot() -> ModelDownloadProgress {
         lock.lock()
+        defer {
+            lock.unlock()
+        }
+
         let currentBytes = min(
             max(currentFileBytes, 0),
             currentExpectedBytes > 0 ? currentExpectedBytes : Int64.max
         )
-        let snapshot = ModelDownloadProgress(
+        return ModelDownloadProgress(
             modelName: modelName,
             completedBytes: completedBytes + currentBytes,
             totalBytes: totalBytes
         )
-        lock.unlock()
-        return snapshot
     }
 }
 
@@ -890,25 +861,34 @@ actor AudioModelTranscriber {
                 guard tokenEventsSinceUpdate >= 8 else { continue }
 
                 tokenEventsSinceUpdate = 0
-                metrics.generationSeconds = Self.seconds(since: generationStart)
-                metrics.modelReportedSeconds = modelReportedSeconds
-                metrics.totalSeconds = Self.seconds(since: totalStart)
+                Self.updateGenerationMetrics(
+                    &metrics,
+                    generationStart: generationStart,
+                    modelReportedSeconds: modelReportedSeconds,
+                    totalStart: totalStart
+                )
                 await onMetricsUpdate?(metrics)
                 await onPartialTranscript?(streamedText.trimmingCharacters(in: .whitespacesAndNewlines))
 
             case .info(let info):
                 modelReportedSeconds = max(modelReportedSeconds, info.generateTime)
-                metrics.generationSeconds = Self.seconds(since: generationStart)
-                metrics.modelReportedSeconds = modelReportedSeconds
-                metrics.totalSeconds = Self.seconds(since: totalStart)
+                Self.updateGenerationMetrics(
+                    &metrics,
+                    generationStart: generationStart,
+                    modelReportedSeconds: modelReportedSeconds,
+                    totalStart: totalStart
+                )
                 await onMetricsUpdate?(metrics)
 
             case .result(let output):
                 finalOutput = output
                 modelReportedSeconds = max(modelReportedSeconds, output.totalTime)
-                metrics.generationSeconds = Self.seconds(since: generationStart)
-                metrics.modelReportedSeconds = modelReportedSeconds
-                metrics.totalSeconds = Self.seconds(since: totalStart)
+                Self.updateGenerationMetrics(
+                    &metrics,
+                    generationStart: generationStart,
+                    modelReportedSeconds: modelReportedSeconds,
+                    totalStart: totalStart
+                )
                 await onMetricsUpdate?(metrics)
 
                 let outputText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -922,9 +902,12 @@ actor AudioModelTranscriber {
         let generationSeconds = Self.seconds(since: generationStart)
         ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(transcript.count)")
 
-        metrics.generationSeconds = generationSeconds
-        metrics.modelReportedSeconds = modelReportedSeconds
-        metrics.totalSeconds = Self.seconds(since: totalStart)
+        Self.updateGenerationMetrics(
+            &metrics,
+            generationSeconds: generationSeconds,
+            modelReportedSeconds: modelReportedSeconds,
+            totalStart: totalStart
+        )
         await onMetricsUpdate?(metrics)
 
         let result = TranscriptionResult(text: transcript, metrics: metrics)
@@ -1322,6 +1305,31 @@ actor AudioModelTranscriber {
         )
     }
 
+    private static func updateGenerationMetrics(
+        _ metrics: inout TranscriptionMetrics,
+        generationStart: ContinuousClock.Instant,
+        modelReportedSeconds: Double,
+        totalStart: ContinuousClock.Instant
+    ) {
+        updateGenerationMetrics(
+            &metrics,
+            generationSeconds: seconds(since: generationStart),
+            modelReportedSeconds: modelReportedSeconds,
+            totalStart: totalStart
+        )
+    }
+
+    private static func updateGenerationMetrics(
+        _ metrics: inout TranscriptionMetrics,
+        generationSeconds: Double,
+        modelReportedSeconds: Double,
+        totalStart: ContinuousClock.Instant
+    ) {
+        metrics.generationSeconds = generationSeconds
+        metrics.modelReportedSeconds = modelReportedSeconds
+        metrics.totalSeconds = seconds(since: totalStart)
+    }
+
     private static func seconds(since start: ContinuousClock.Instant) -> Double {
         let duration = start.duration(to: ContinuousClock.now)
         return Double(duration.components.seconds) +
@@ -1401,27 +1409,18 @@ final class ProbeViewModel {
 
     var canPressPrimaryButton: Bool {
         if isRecording {
-            return !isPreparingModel && !isTranscribing && !isProcessingImport && !isDeletingModel
+            return !hasRecordingStopBlocker
         }
-        return !isStartingRecording
-            && !isTranscribing
-            && !isPreparingModel
-            && !isProcessingImport
-            && !isDeletingModel
-            && selectedModelCanRecord
+
+        return !hasNonRecordingWork && selectedModelCanRecord
     }
 
     var modelControlsDisabled: Bool {
-        isRecording || isStartingRecording || isTranscribing || isPreparingModel || isProcessingImport || isDeletingModel
+        isRecording || hasNonRecordingWork
     }
 
     var canImportAudio: Bool {
-        !isRecording
-            && !isStartingRecording
-            && !isTranscribing
-            && !isPreparingModel
-            && !isProcessingImport
-            && !isDeletingModel
+        !isRecording && !hasNonRecordingWork
     }
 
     var selectedModel: AudioModelOption {
@@ -1506,11 +1505,7 @@ final class ProbeViewModel {
 
     var canRunSelectedModel: Bool {
         !isRecording
-            && !isStartingRecording
-            && !isTranscribing
-            && !isPreparingModel
-            && !isProcessingImport
-            && !isDeletingModel
+            && !hasNonRecordingWork
             && currentSample != nil
             && selectedModelCanRecord
     }
@@ -1547,6 +1542,18 @@ final class ProbeViewModel {
 
     var hasTranscriptOutput: Bool {
         transcriptStatistics.characters > 0
+    }
+
+    var canClearOutput: Bool {
+        !isRecording && !hasNonRecordingWork
+    }
+
+    private var hasRecordingStopBlocker: Bool {
+        isPreparingModel || isTranscribing || isProcessingImport || isDeletingModel
+    }
+
+    private var hasNonRecordingWork: Bool {
+        isStartingRecording || hasRecordingStopBlocker
     }
 
     func primaryButtonPressed() {
@@ -2155,6 +2162,8 @@ final class ProbeViewModel {
         AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
     ]
 
+    private nonisolated static let recordingSessionDirectoryName = "session-\(UUID().uuidString)"
+
     private static func makeRecordingURL() throws -> URL {
         let directory = recordingDirectory()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -2165,24 +2174,33 @@ final class ProbeViewModel {
         let rootDirectory = recordingRootDirectory()
         let currentDirectory = recordingDirectory()
         let staleCutoff = Date().addingTimeInterval(-24 * 60 * 60)
-        guard let files = try? FileManager.default.contentsOfDirectory(
+        guard let sessionDirectories = try? FileManager.default.contentsOfDirectory(
             at: rootDirectory,
             includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey]
         ) else {
             return
         }
 
-        for file in files {
-            guard file != currentDirectory,
-                  let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey]),
-                  values.isDirectory == true,
-                  (values.contentModificationDate ?? .distantPast) < staleCutoff
-            else {
-                continue
+        for directory in sessionDirectories {
+            if isStaleRecordingDirectory(directory, currentDirectory: currentDirectory, staleCutoff: staleCutoff) {
+                try? FileManager.default.removeItem(at: directory)
             }
-
-            try? FileManager.default.removeItem(at: file)
         }
+    }
+
+    private nonisolated static func isStaleRecordingDirectory(
+        _ directory: URL,
+        currentDirectory: URL,
+        staleCutoff: Date
+    ) -> Bool {
+        guard directory != currentDirectory,
+              let values = try? directory.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey]),
+              values.isDirectory == true
+        else {
+            return false
+        }
+
+        return (values.contentModificationDate ?? .distantPast) < staleCutoff
     }
 
     private nonisolated static func recordingDirectory() -> URL {
@@ -2193,8 +2211,6 @@ final class ProbeViewModel {
     private nonisolated static func recordingRootDirectory() -> URL {
         FileManager.default.temporaryDirectory.appending(path: "MLXAudioLabRecordings", directoryHint: .isDirectory)
     }
-
-    private nonisolated static let recordingSessionDirectoryName = "session-\(UUID().uuidString)"
 
     private nonisolated static func audioDurationSeconds(for url: URL) throws -> Double {
         let audioFile = try AVAudioFile(forReading: url)
@@ -2592,14 +2608,7 @@ struct SampleControlPanel: View {
                         .frame(width: 28)
                 }
                 .labButtonStyle()
-                .disabled(
-                    model.isRecording
-                        || model.isStartingRecording
-                        || model.isTranscribing
-                        || model.isPreparingModel
-                        || model.isProcessingImport
-                        || model.isDeletingModel
-                )
+                .disabled(!model.canClearOutput)
                 .help("Clear sample and output")
             }
 
@@ -2714,13 +2723,13 @@ struct TranscriptWorkspace: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 0) {
                     Group {
-                        if model.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text("No output yet.")
-                                .foregroundStyle(.tertiary)
-                        } else {
+                        if model.hasTranscriptOutput {
                             Text(model.transcript)
                                 .foregroundStyle(.primary)
                                 .textSelection(.enabled)
+                        } else {
+                            Text("No output yet.")
+                                .foregroundStyle(.tertiary)
                         }
                     }
                     .font(.system(.body, design: .default))
