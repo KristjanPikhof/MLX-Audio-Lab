@@ -949,6 +949,7 @@ actor AudioModelTranscriber {
         var finalOutput: STTOutput?
         var modelReportedSeconds = 0.0
         var tokenEventsSinceUpdate = 0
+        var lastPartialTranscriptUpdate = Date.distantPast
 
         for try await event in loadedModel.generateStream(
             audio: audio,
@@ -961,9 +962,17 @@ actor AudioModelTranscriber {
                 streamedText += token
                 tokenEventsSinceUpdate += 1
 
-                guard tokenEventsSinceUpdate >= 8 else { continue }
+                let partialTranscript = streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard Self.shouldEmitPartialTranscript(
+                    partialTranscript,
+                    tokenEventsSinceUpdate: tokenEventsSinceUpdate,
+                    lastUpdate: lastPartialTranscriptUpdate
+                ) else {
+                    continue
+                }
 
                 tokenEventsSinceUpdate = 0
+                lastPartialTranscriptUpdate = Date()
                 Self.updateGenerationMetrics(
                     &metrics,
                     generationStart: generationStart,
@@ -971,7 +980,7 @@ actor AudioModelTranscriber {
                     totalStart: totalStart
                 )
                 await onMetricsUpdate?(metrics)
-                await onPartialTranscript?(streamedText.trimmingCharacters(in: .whitespacesAndNewlines))
+                await onPartialTranscript?(partialTranscript)
 
             case .info(let info):
                 modelReportedSeconds = max(modelReportedSeconds, info.generateTime)
@@ -1464,6 +1473,17 @@ actor AudioModelTranscriber {
             modelReportedSeconds: modelReportedSeconds,
             totalStart: totalStart
         )
+    }
+
+    private static func shouldEmitPartialTranscript(
+        _ transcript: String,
+        tokenEventsSinceUpdate: Int,
+        lastUpdate: Date
+    ) -> Bool {
+        guard !transcript.isEmpty else { return false }
+        if lastUpdate == .distantPast { return true }
+        if tokenEventsSinceUpdate >= 4 { return true }
+        return Date().timeIntervalSince(lastUpdate) >= 0.2
     }
 
     private static func updateGenerationMetrics(
