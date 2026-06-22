@@ -1,5 +1,15 @@
 # MLX Audio Lab
 
+[![Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)](Package.swift)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-0A84FF?logo=apple&logoColor=white)](Package.swift)
+[![SwiftPM](https://img.shields.io/badge/build-SwiftPM-6E6E73)](Package.swift)
+[![Apple Silicon recommended](https://img.shields.io/badge/Apple%20Silicon-recommended-111111?logo=apple&logoColor=white)](#requirements)
+[![MLX local ASR](https://img.shields.io/badge/MLX-local%20ASR-00A67E)](#supported-models)
+[![Models: Nemotron + Parakeet](https://img.shields.io/badge/models-Nemotron%20%2B%20Parakeet-7C3AED)](#supported-models)
+[![Media import](https://img.shields.io/badge/import-audio%20%2B%20video-2563EB)](#quick-start)
+[![TXT/MD export](https://img.shields.io/badge/export-TXT%20%2F%20MD-059669)](#quick-start)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Minimal macOS SwiftUI app for testing different MLX audio models locally on
 macOS and comparing their transcription performance.
 
