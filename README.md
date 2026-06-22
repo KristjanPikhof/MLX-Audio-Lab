@@ -83,7 +83,8 @@ Imported media is normalized to 16 kHz mono WAV, then decoded in bounded
 30-second model chunks. This keeps peak memory lower than the upstream default
 20-minute decode window and is safer for long recordings. Very long files can
 still take minutes because the current app loads the normalized audio sample
-before running the model.
+before running the model. The **Cancel** button stops after the current decode
+chunk finishes, so it may take a few seconds to settle on slower runs.
 
 ## Local files
 

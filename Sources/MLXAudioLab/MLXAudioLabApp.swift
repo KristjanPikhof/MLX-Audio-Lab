@@ -848,10 +848,11 @@ final class ProbeViewModel {
                 let result = try await transcriber.transcribe(
                     audioURL: sample.url,
                     audioSeconds: sample.durationSeconds,
-                    using: option
-                ) { partialTranscript in
-                    await MainActor.run {
-                        self.transcript = partialTranscript
+                    using: option,
+                    onPartialTranscript: { partialTranscript in
+                        await MainActor.run {
+                            self.transcript = partialTranscript
+                        }
                     }
                 )
                 self.loadedModelIDs.insert(option.id)
@@ -1577,6 +1578,7 @@ struct TranscriptWorkspace: View {
     private var statusTint: Color {
         if model.isRecording { return .red }
         if statusShowsProgress { return .orange }
+        if model.status.localizedCaseInsensitiveContains("cancelled") { return .orange }
         if model.errorMessage != nil { return .red }
         return .green
     }
