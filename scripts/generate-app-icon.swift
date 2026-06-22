@@ -69,13 +69,13 @@ func drawIcon(pixels: Int) throws -> Data {
     ])?.draw(in: bgPath, angle: -45)
 
     NSColor(red: 0.043, green: 0.071, blue: 0.125, alpha: 0.42).setFill()
-    NSBezierPath(ovalIn: rect(302, 216, 420, 420)).fill()
+    NSBezierPath(ovalIn: rect(302, 302, 420, 420)).fill()
 
     let wave = NSBezierPath()
-    wave.move(to: point(254, 560))
-    wave.curve(to: point(408, 560), controlPoint1: point(306, 424), controlPoint2: point(356, 424))
-    wave.curve(to: point(562, 560), controlPoint1: point(460, 696), controlPoint2: point(510, 696))
-    wave.curve(to: point(770, 560), controlPoint1: point(614, 424), controlPoint2: point(666, 424))
+    wave.move(to: point(254, 512))
+    wave.curve(to: point(408, 512), controlPoint1: point(306, 376), controlPoint2: point(356, 376))
+    wave.curve(to: point(562, 512), controlPoint1: point(460, 648), controlPoint2: point(510, 648))
+    wave.curve(to: point(770, 512), controlPoint1: point(614, 376), controlPoint2: point(666, 376))
     wave.lineWidth = 54 * scale
     wave.lineCapStyle = .round
     NSColor(red: 0.70, green: 0.95, blue: 0.94, alpha: 1).setStroke()
