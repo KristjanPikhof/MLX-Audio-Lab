@@ -138,14 +138,15 @@ downloaded model from local disk.
 
 The app reports audio length, audio load, model load, generation, model-reported
 time, and total time separately. These metrics update as audio load, model load,
-and streaming generation events arrive. In local tests, model load was usually
+and each generation chunk completes. In local tests, model load was usually
 under 2 seconds; long waits came from generation over long media files.
 
 Imported media is normalized to 16 kHz mono WAV, then transcribed with the
-model streaming API using a 30-second chunk duration. Very long files can still
-take minutes because the current app loads the normalized audio sample before
-running the model. The **Cancel** button stops after the current generation step
-finishes, so it may take a few seconds to settle on slower runs.
+model in bounded 30-second chunks so partial transcript output appears between
+chunks. Very long files can still take minutes because the current app loads the
+normalized audio sample before running the model. The **Cancel** button stops
+after the current generation chunk finishes, so it may take a few seconds to
+settle on slower runs.
 
 ## Local files
 
