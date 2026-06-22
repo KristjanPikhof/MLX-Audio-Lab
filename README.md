@@ -10,7 +10,6 @@ will be added soon.
 
 <img width="1232" height="894" alt="image" src="https://github.com/user-attachments/assets/10675ff8-7dbc-4b24-8f9b-98d04f9c6216" />
 
-
 ## Supported models
 
 | Model | Hugging Face repo | Approx. download | Notes |
@@ -56,6 +55,8 @@ cd MLXAudioLab
 Running `xcodebuild ... build` by itself only compiles the package. Use
 `./run.sh` to build, package, sign, and open the macOS app bundle.
 
+The app window has a minimum size of 1120 x 750.
+
 Click **Record**, speak, then click **Stop**. The recording is kept as the
 current audio sample for this app session and is transcribed with the selected
 model.
@@ -73,17 +74,21 @@ is already available on the computer or whether it still needs to be downloaded.
 After switching models, click **Run Selected Model** to regenerate output from
 the current audio sample.
 
-The performance panel also shows transcript word/letter counts and can copy the
-transcript or save it as `.txt` or `.md`.
+The transcript panel has a **Follow** checkbox, enabled by default, to keep the
+latest generated text in view while transcription is running.
+
+The performance panel also shows transcript word, letter, character, and line
+counts. It can copy the transcript or save it as `.txt` or `.md`.
 
 Use the small trash button next to the model picker to delete the selected
 downloaded model from the local Hugging Face cache.
 
 ## Performance notes
 
-The app reports model load separately from generation. In local tests, model
-load was usually under 2 seconds; long waits came from generation over long
-media files.
+The app reports audio length, audio load, model load, generation, model-reported
+time, and total time separately. These metrics update as audio load, model load,
+and each decode chunk completes. In local tests, model load was usually under 2
+seconds; long waits came from generation over long media files.
 
 Imported media is normalized to 16 kHz mono WAV, then decoded in bounded
 30-second model chunks. This keeps peak memory lower than the upstream default
@@ -102,6 +107,9 @@ chunk finishes, so it may take a few seconds to settle on slower runs.
 | Runtime logs | `~/Library/Caches/MLXAudioLab/` | Local only; do not commit. |
 | Temporary audio | macOS temporary directory | Recorded/imported media is converted to session-only WAV and deleted when cleared, replaced, or on next launch. |
 | Model cache | `~/.cache/huggingface/hub/mlx-audio/` | Local only; large downloads are not part of the repo. |
+
+The **Local paths** panel can copy or open the logs and model cache folders in
+Finder. Opening a path creates the folder first if it does not exist yet.
 
 The app does not require API keys. It does not write transcript text to its logs.
 
