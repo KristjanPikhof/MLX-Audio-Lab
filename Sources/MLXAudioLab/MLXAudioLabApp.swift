@@ -486,6 +486,14 @@ struct ModelDownloadProgress: Equatable, Sendable {
     }
 }
 
+private final class ModelDownloadProgressBox: @unchecked Sendable {
+    let progress: Progress
+
+    init(_ progress: Progress) {
+        self.progress = progress
+    }
+}
+
 struct TranscriptStatistics: Sendable {
     let words: Int
     let letters: Int
@@ -671,35 +679,166 @@ actor AudioModelTranscriber {
             throw Self.makeError("Invalid repository ID: \(option.repoID)")
         }
 
-        let progressSampler = startDownloadProgressSampler(
+        if ModelCache.availability(for: option) == .incomplete {
+            try ModelCache.delete(option)
+        }
+
+        let cacheProgressSampler = startDownloadProgressSampler(
             for: option,
             onDownloadProgress: onDownloadProgress
         )
 
         ProbeLog.write("model cache download begin repo=\(option.repoID)")
         do {
-            _ = try await ModelUtils.resolveOrDownloadModel(
+            try await downloadModelSnapshot(
                 client: client,
-                cache: cache,
                 repoID: repoID,
-                requiredExtension: "safetensors",
-                additionalMatchingPatterns: option.requiredFileNames,
-                progressHandler: { progress in
-                    onDownloadProgress?(
-                        ModelDownloadProgress(
-                            modelName: option.displayName,
-                            progress: progress,
-                            fallbackTotalBytes: option.downloadSizeBytes
-                        )
-                    )
-                }
+                option: option,
+                onDownloadProgress: onDownloadProgress
             )
-            await stopDownloadProgressSampler(progressSampler)
+            await stopDownloadProgressSampler(cacheProgressSampler)
+        } catch {
+            await stopDownloadProgressSampler(cacheProgressSampler)
+            throw error
+        }
+        ProbeLog.write("model cache download complete repo=\(option.repoID)")
+    }
+
+    private func downloadModelSnapshot(
+        client: HubClient,
+        repoID: Repo.ID,
+        option: AudioModelOption,
+        onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
+    ) async throws {
+        let modelDirectory = ModelCache.directory(for: option)
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+
+        let entries = try await downloadableEntries(client: client, repoID: repoID, option: option)
+        guard entries.contains(where: { URL(fileURLWithPath: $0.path).pathExtension.lowercased() == "safetensors" }) else {
+            throw Self.makeError("No model.safetensors file was found in \(option.repoID).")
+        }
+
+        let totalBytes = entries.reduce(Int64(0)) { partial, entry in
+            partial + max(Int64(entry.size ?? 1), 1)
+        }
+        let progress = Progress(totalUnitCount: max(totalBytes, 1))
+        let progressSampler = startModelProgressSampler(
+            progress: progress,
+            option: option,
+            onDownloadProgress: onDownloadProgress
+        )
+
+        await emit(progress: progress, option: option, onDownloadProgress: onDownloadProgress)
+
+        do {
+            for entry in entries {
+                try Task.checkCancellation()
+
+                let fileBytes = max(Int64(entry.size ?? 1), 1)
+                let fileProgress = Progress(
+                    totalUnitCount: fileBytes,
+                    parent: progress,
+                    pendingUnitCount: fileBytes
+                )
+                let destination = modelDirectory.appending(path: entry.path)
+
+                _ = try await client.downloadFile(
+                    entry,
+                    from: repoID,
+                    to: destination,
+                    kind: .model,
+                    revision: "main",
+                    progress: fileProgress,
+                    transport: .lfs
+                )
+                fileProgress.completedUnitCount = fileProgress.totalUnitCount
+                await emit(progress: progress, option: option, onDownloadProgress: onDownloadProgress)
+            }
         } catch {
             await stopDownloadProgressSampler(progressSampler)
             throw error
         }
-        ProbeLog.write("model cache download complete repo=\(option.repoID)")
+
+        await stopDownloadProgressSampler(progressSampler)
+
+        progress.completedUnitCount = progress.totalUnitCount
+        await emit(progress: progress, option: option, onDownloadProgress: onDownloadProgress)
+
+        guard ModelCache.availability(for: option) == .available else {
+            throw Self.makeError("The model download finished, but required files are still missing.")
+        }
+    }
+
+    private func downloadableEntries(
+        client: HubClient,
+        repoID: Repo.ID,
+        option: AudioModelOption
+    ) async throws -> [Git.TreeEntry] {
+        let patterns = Set([
+            "*.safetensors",
+            "*.json",
+            "*.txt",
+            "*.wav"
+        ] + option.requiredFileNames)
+        let entries = try await client.listFiles(
+            in: repoID,
+            kind: .model,
+            revision: "main",
+            recursive: true
+        )
+
+        return entries
+            .filter { entry in
+                guard entry.type == .file else { return false }
+                return patterns.contains { pattern in
+                    fnmatch(pattern, entry.path, 0) == 0
+                }
+            }
+            .sorted {
+                let leftSize = $0.size ?? 0
+                let rightSize = $1.size ?? 0
+                if leftSize == rightSize {
+                    return $0.path < $1.path
+                }
+                return leftSize > rightSize
+            }
+    }
+
+    private func startModelProgressSampler(
+        progress: Progress,
+        option: AudioModelOption,
+        onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
+    ) -> Task<Void, Never>? {
+        guard let onDownloadProgress else { return nil }
+
+        let progressBox = ModelDownloadProgressBox(progress)
+        return Task.detached(priority: .utility) { [option, onDownloadProgress, progressBox] in
+            while !Task.isCancelled {
+                await onDownloadProgress(
+                    ModelDownloadProgress(
+                        modelName: option.displayName,
+                        progress: progressBox.progress,
+                        fallbackTotalBytes: option.downloadSizeBytes
+                    )
+                )
+
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
+    private func emit(
+        progress: Progress,
+        option: AudioModelOption,
+        onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
+    ) async {
+        await onDownloadProgress?(
+            ModelDownloadProgress(
+                modelName: option.displayName,
+                progress: progress,
+                fallbackTotalBytes: option.downloadSizeBytes
+            )
+        )
     }
 
     private func startDownloadProgressSampler(

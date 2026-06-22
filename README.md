@@ -130,8 +130,8 @@ the current audio sample.
 
 When a model is downloading, a progress banner appears at the top of the
 window with the model name, percentage, downloaded bytes, and a linear progress
-bar. It combines Hugging Face download progress with local cache byte sampling,
-so large Xet-backed models should not look stuck during the first install.
+bar. App-managed downloads use the Hugging Face LFS transfer path so the banner
+can update while large model files are still downloading.
 
 The transcript panel has a **Follow** checkbox, enabled by default, to keep the
 latest generated text in view while transcription is running.
