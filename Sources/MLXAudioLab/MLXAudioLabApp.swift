@@ -1321,7 +1321,7 @@ struct ContentView: View {
                 workspace
             }
         }
-        .frame(minWidth: 1120, minHeight: 720)
+        .frame(minWidth: 1120, minHeight: 750)
         .onAppear {
             model.refreshModelAvailability(updateStatus: true)
         }
