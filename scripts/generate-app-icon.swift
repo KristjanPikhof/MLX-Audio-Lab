@@ -81,10 +81,6 @@ func drawIcon(pixels: Int) throws -> Data {
     NSColor(red: 0.70, green: 0.95, blue: 0.94, alpha: 1).setStroke()
     wave.stroke()
 
-    NSColor(red: 0.90, green: 0.98, blue: 1.0, alpha: 0.94).setFill()
-    NSBezierPath(roundedRect: rect(256, 440, 168, 280), xRadius: 58 * scale, yRadius: 58 * scale).fill()
-    NSBezierPath(roundedRect: rect(600, 440, 168, 280), xRadius: 58 * scale, yRadius: 58 * scale).fill()
-
     let mlxFont = NSFont(name: "AvenirNext-Heavy", size: 148 * scale)
         ?? NSFont.boldSystemFont(ofSize: 148 * scale)
     let audioFont = NSFont(name: "AvenirNext-Bold", size: 72 * scale)
