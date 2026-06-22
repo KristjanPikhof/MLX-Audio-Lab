@@ -5,6 +5,7 @@ import MLXAudioCore
 import MLXAudioSTT
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum AudioModelFamily: String, Sendable {
     case nemotron
@@ -121,6 +122,38 @@ enum ModelCache {
     }
 }
 
+enum AudioSampleSource: String, Sendable {
+    case recorded
+    case imported
+
+    var displayName: String {
+        switch self {
+        case .recorded:
+            return "Recorded sample"
+        case .imported:
+            return "Imported WAV"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .recorded:
+            return "record.circle"
+        case .imported:
+            return "waveform.badge.plus"
+        }
+    }
+}
+
+struct AudioSample: Identifiable, Sendable {
+    let id: UUID
+    let url: URL
+    let source: AudioSampleSource
+    let displayName: String
+    let durationSeconds: Double
+    let createdAt: Date
+}
+
 enum ProbeLog {
     static func configureProcessOutput() {
         let directory = logDirectory()
@@ -169,7 +202,7 @@ enum ProbeLog {
 }
 
 struct TranscriptionMetrics: Sendable {
-    var recordingSeconds: Double = 0
+    var audioSeconds: Double = 0
     var audioLoadSeconds: Double = 0
     var modelLoadSeconds: Double = 0
     var generationSeconds: Double = 0
@@ -202,18 +235,18 @@ actor AudioModelTranscriber {
     }
 
     func transcribe(
-        recordingURL: URL,
-        recordingSeconds: Double,
+        audioURL: URL,
+        audioSeconds: Double,
         using option: AudioModelOption
     ) async throws -> TranscriptionResult {
         ProbeLog.write(
-            "transcribe begin repo=\(option.repoID) recording=\(recordingURL.lastPathComponent) recordingSeconds=\(recordingSeconds)"
+            "transcribe begin repo=\(option.repoID) audio=\(audioURL.lastPathComponent) audioSeconds=\(audioSeconds)"
         )
         let totalStart = ContinuousClock.now
 
         let audioLoadStart = ContinuousClock.now
         ProbeLog.write("audio load begin")
-        let (_, audio) = try loadAudioArray(from: recordingURL, sampleRate: 16_000)
+        let (_, audio) = try loadAudioArray(from: audioURL, sampleRate: 16_000)
         let audioLoadSeconds = Self.seconds(since: audioLoadStart)
         ProbeLog.write("audio load complete seconds=\(audioLoadSeconds)")
 
@@ -232,7 +265,7 @@ actor AudioModelTranscriber {
         ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(output.text.count)")
 
         let metrics = TranscriptionMetrics(
-            recordingSeconds: recordingSeconds,
+            audioSeconds: audioSeconds,
             audioLoadSeconds: audioLoadSeconds,
             modelLoadSeconds: modelLoadSeconds,
             generationSeconds: generationSeconds,
@@ -298,6 +331,7 @@ final class ProbeViewModel {
     var isRecording = false
     var isTranscribing = false
     var isPreparingModel = false
+    var isImportingAudio = false
     var selectedModelID = AudioModelOption.supported[0].id {
         didSet {
             guard oldValue != selectedModelID else { return }
@@ -306,6 +340,7 @@ final class ProbeViewModel {
     }
     var modelAvailability: [String: ModelLocalAvailability] = [:]
     var loadedModelIDs: Set<String> = []
+    var currentSample: AudioSample?
     var status = "Ready"
     var transcript = ""
     var errorMessage: String?
@@ -322,6 +357,7 @@ final class ProbeViewModel {
     private var modelPreparationTask: Task<Void, Never>?
 
     init() {
+        Self.cleanupTemporaryAudioFiles()
         refreshModelAvailability(updateStatus: true)
     }
 
@@ -340,6 +376,10 @@ final class ProbeViewModel {
 
     var modelControlsDisabled: Bool {
         isRecording || isTranscribing || isPreparingModel
+    }
+
+    var canImportAudio: Bool {
+        !isRecording && !isTranscribing && !isPreparingModel
     }
 
     var selectedModel: AudioModelOption {
@@ -418,6 +458,32 @@ final class ProbeViewModel {
         selectedModelIsLoaded || selectedModelAvailability == .available
     }
 
+    var canRunSelectedModel: Bool {
+        !isRecording && !isTranscribing && !isPreparingModel && currentSample != nil && selectedModelCanRecord
+    }
+
+    var runSelectedModelDisabledText: String {
+        if currentSample == nil {
+            return "Record or import a WAV first"
+        }
+        if !selectedModelCanRecord {
+            return "Download the selected model before running"
+        }
+        return ""
+    }
+
+    var currentSampleDescription: String {
+        guard let currentSample else {
+            return "Record or import a WAV first"
+        }
+
+        return "\(currentSample.source.displayName) · \(currentSample.displayName) · \(Self.formatSeconds(currentSample.durationSeconds))"
+    }
+
+    var currentSampleIcon: String {
+        currentSample?.source.systemImage ?? "waveform"
+    }
+
     var modelCacheRootPath: String {
         ModelCache.rootDirectory().path
     }
@@ -439,6 +505,41 @@ final class ProbeViewModel {
 
         if updateStatus, !isRecording, !isTranscribing, !isPreparingModel {
             status = idleStatusForSelectedModel()
+        }
+    }
+
+    func beginImportAudio() {
+        guard canImportAudio else { return }
+        errorMessage = nil
+        isImportingAudio = true
+    }
+
+    func handleImportedAudio(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let sourceURL = urls.first else {
+                status = "Import canceled"
+                return
+            }
+
+            do {
+                let sample = try importAudioSample(from: sourceURL)
+                replaceCurrentSample(with: sample)
+                transcript = ""
+                metrics = TranscriptionMetrics()
+                recordingElapsedSeconds = 0
+                errorMessage = nil
+                status = "Ready to run"
+                ProbeLog.write("audio import complete file=\(sample.url.lastPathComponent) seconds=\(sample.durationSeconds)")
+            } catch {
+                status = "Import failed"
+                errorMessage = Self.describe(error)
+                ProbeLog.write("audio import failed file=\(sourceURL.lastPathComponent)", error: error)
+            }
+        case .failure(let error):
+            status = "Import failed"
+            errorMessage = Self.describe(error)
+            ProbeLog.write("audio import failed", error: error)
         }
     }
 
@@ -469,6 +570,22 @@ final class ProbeViewModel {
             }
             isPreparingModel = false
         }
+    }
+
+    func runSelectedModelForCurrentSample() {
+        guard let sample = currentSample else {
+            status = "Record or import a WAV first"
+            errorMessage = nil
+            return
+        }
+
+        guard selectedModelCanRecord else {
+            status = "Download the selected model before running"
+            errorMessage = "\(selectedModel.displayName) is not available on this Mac yet."
+            return
+        }
+
+        startTranscription(sample: sample, option: selectedModel)
     }
 
     func startRecording() {
