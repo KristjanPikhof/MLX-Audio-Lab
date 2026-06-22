@@ -448,6 +448,7 @@ final class ProbeViewModel {
     var transcript = ""
     var errorMessage: String?
     var transcriptExportMessage: String?
+    var pathActionMessage: String?
     var shouldFollowTranscript = true
     var metrics = TranscriptionMetrics()
     var recordingElapsedSeconds: Double = 0
@@ -960,6 +961,28 @@ final class ProbeViewModel {
             fileExtension: "md",
             contentType: Self.markdownContentType
         )
+    }
+
+    func copyPath(_ path: String, title: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(path, forType: .string)
+        pathActionMessage = "\(title) path copied"
+    }
+
+    func openPathInFinder(_ path: String, title: String) {
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            guard NSWorkspace.shared.open(url) else {
+                pathActionMessage = "Could not open \(title)"
+                return
+            }
+            pathActionMessage = "Opened \(title) in Finder"
+        } catch {
+            pathActionMessage = "Could not open \(title): \(Self.describe(error))"
+        }
     }
 
     private func idleStatusForSelectedModel() -> String {
@@ -1873,10 +1896,18 @@ struct SystemPathsPanel: View {
     let model: ProbeViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "Local paths", symbol: "folder")
-            PathLine(title: "Logs", value: model.logDirectoryPath)
-            PathLine(title: "Models", value: model.modelCacheRootPath)
+            PathActionRow(title: "Logs", value: model.logDirectoryPath, model: model)
+            PathActionRow(title: "Models", value: model.modelCacheRootPath, model: model)
+
+            if let message = model.pathActionMessage {
+                let isFailure = message.localizedCaseInsensitiveContains("could not")
+                Label(message, systemImage: isFailure ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(isFailure ? .red : .secondary)
+                    .lineLimit(2)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1973,22 +2004,52 @@ struct ErrorNotice: View {
     }
 }
 
-struct PathLine: View {
+struct PathActionRow: View {
     let title: String
     let value: String
+    let model: ProbeViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Text(displayPath)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                model.copyPath(value, title: title)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .frame(width: 24)
+            }
+            .labButtonStyle()
+            .help("Copy \(title.lowercased()) path")
+            .accessibilityLabel("Copy \(title) path")
+
+            Button {
+                model.openPathInFinder(value, title: title)
+            } label: {
+                Image(systemName: "folder")
+                    .frame(width: 24)
+            }
+            .labButtonStyle()
+            .help("Open \(title.lowercased()) folder in Finder")
+            .accessibilityLabel("Open \(title) folder in Finder")
         }
+        .padding(.vertical, 3)
+    }
+
+    private var displayPath: String {
+        NSString(string: value).abbreviatingWithTildeInPath
     }
 }
 
