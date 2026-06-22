@@ -3325,6 +3325,9 @@ private enum AboutPanel {
             Local speech transcription and ASR model comparison for Apple Silicon.
 
             Audio stays on this Mac. Models are downloaded into the local Hugging Face cache.
+
+            Author: Kristjan Pikhof
+            License: MIT
             """,
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
