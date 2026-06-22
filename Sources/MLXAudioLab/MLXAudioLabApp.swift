@@ -3293,8 +3293,15 @@ private extension View {
     }
 }
 
+private final class ApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+}
+
 @main
 struct MLXAudioLabApp: App {
+    @NSApplicationDelegateAdaptor(ApplicationDelegate.self) private var applicationDelegate
     @State private var model = ProbeViewModel()
 
     init() {
