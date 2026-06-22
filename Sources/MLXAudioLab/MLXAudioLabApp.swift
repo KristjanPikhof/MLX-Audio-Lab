@@ -775,7 +775,7 @@ actor AudioModelTranscriber {
     private static let safeDecodeChunkDurationSeconds: Float = 30
 
     private var loadedModels: [String: any STTGenerationModel] = [:]
-    private var loadingModelIDs: Set<String> = []
+    private var loadingModelTasks: [String: Task<any STTGenerationModel, Error>] = [:]
 
     func prepareModel(
         _ option: AudioModelOption,
@@ -921,22 +921,31 @@ actor AudioModelTranscriber {
             return model
         }
 
-        while loadingModelIDs.contains(option.id) {
-            try Task.checkCancellation()
-            try await Task.sleep(for: .milliseconds(100))
-
-            if let model = loadedModels[option.id] {
-                ProbeLog.write("model joined in-flight load repo=\(option.repoID)")
-                return model
-            }
+        if let task = loadingModelTasks[option.id] {
+            let model = try await task.value
+            ProbeLog.write("model joined in-flight load repo=\(option.repoID)")
+            return model
         }
 
         ProbeLog.write("model load begin repo=\(option.repoID)")
-        loadingModelIDs.insert(option.id)
-        defer {
-            loadingModelIDs.remove(option.id)
+        let task = Task {
+            try await Self.loadModel(for: option)
         }
+        loadingModelTasks[option.id] = task
 
+        do {
+            let model = try await task.value
+            loadedModels[option.id] = model
+            loadingModelTasks[option.id] = nil
+            ProbeLog.write("model load complete repo=\(option.repoID)")
+            return model
+        } catch {
+            loadingModelTasks[option.id] = nil
+            throw error
+        }
+    }
+
+    private static func loadModel(for option: AudioModelOption) async throws -> any STTGenerationModel {
         let model: any STTGenerationModel
         switch option.family {
         case .nemotron:
@@ -959,8 +968,6 @@ actor AudioModelTranscriber {
             model = try await CohereTranscribeModel.fromPretrained(option.repoID)
         }
 
-        loadedModels[option.id] = model
-        ProbeLog.write("model load complete repo=\(option.repoID)")
         return model
     }
 
@@ -1128,6 +1135,20 @@ actor AudioModelTranscriber {
         to destination: URL,
         progressState: ModelDownloadProgressState
     ) async throws {
+        try await Task.detached(priority: .utility) {
+            try Self.copyFileWithProgressSynchronously(
+                from: source,
+                to: destination,
+                progressState: progressState
+            )
+        }.value
+    }
+
+    private nonisolated static func copyFileWithProgressSynchronously(
+        from source: URL,
+        to destination: URL,
+        progressState: ModelDownloadProgressState
+    ) throws {
         let fileManager = FileManager.default
         let resolvedSource = source.resolvingSymlinksInPath()
         try fileManager.createDirectory(
@@ -1162,7 +1183,6 @@ actor AudioModelTranscriber {
             try output.write(contentsOf: data)
             let writtenBytes = try output.offset()
             progressState.updateCurrentFileBytes(Int64(writtenBytes))
-            await Task.yield()
         }
 
         try? fileManager.removeItem(at: destination)
