@@ -40,3 +40,5 @@ codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
 open -n "$APP_BUNDLE"
 
 printf 'Opened %s\n' "$APP_BUNDLE"
+printf 'App bundle: %s\n' "$APP_BUNDLE"
+printf 'App folder: %s\n' "$(dirname "$APP_BUNDLE")"
