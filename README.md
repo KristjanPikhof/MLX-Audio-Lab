@@ -78,10 +78,24 @@ The current model folders are:
 ```text
 ~/.cache/huggingface/hub/mlx-audio/mlx-community_nemotron-3.5-asr-streaming-0.6b-8bit
 ~/.cache/huggingface/hub/mlx-audio/mlx-community_parakeet-tdt-0.6b-v3
+~/.cache/huggingface/hub/mlx-audio/mlx-community_Qwen3-ASR-0.6B-4bit
+~/.cache/huggingface/hub/mlx-audio/mlx-community_Qwen3-ASR-1.7B-4bit
+~/.cache/huggingface/hub/mlx-audio/mlx-community_whisper-large-v3-turbo-asr-fp16
+~/.cache/huggingface/hub/mlx-audio/mlx-community_SenseVoiceSmall
+~/.cache/huggingface/hub/mlx-audio/mlx-community_GLM-ASR-Nano-2512-4bit
+~/.cache/huggingface/hub/mlx-audio/mlx-community_granite-4.0-1b-speech-5bit
+~/.cache/huggingface/hub/mlx-audio/mlx-community_Voxtral-Mini-4B-Realtime-2602-4bit
+~/.cache/huggingface/hub/mlx-audio/beshkenadze_cohere-transcribe-03-2026-mlx-fp16
 ```
 
 If `HF_HUB_CACHE` or `HF_HOME` is set, the Hugging Face cache root follows those
 environment variables.
+
+The app uses the small trash button next to the model picker to remove the
+selected model. Deletion removes both the app-specific `mlx-audio/<repo>` copy
+and the matching standard Hugging Face `models--owner--repo` cache directory
+when present. It does not delete recordings, imported samples, logs, or other
+models.
 
 ## Quick start
 
@@ -119,7 +133,7 @@ The performance panel also shows transcript word, letter, character, and line
 counts. It can copy the transcript or save it as `.txt` or `.md`.
 
 Use the small trash button next to the model picker to delete the selected
-downloaded model from the local Hugging Face cache.
+downloaded model from local disk.
 
 ## Performance notes
 
@@ -145,6 +159,7 @@ chunk finishes, so it may take a few seconds to settle on slower runs.
 | Runtime logs | `~/Library/Caches/MLXAudioLab/` | Local only; do not commit. |
 | Temporary audio | macOS temporary directory | Recorded/imported media is converted to session-only WAV and deleted when cleared, replaced, or on next launch. |
 | Model cache | `~/.cache/huggingface/hub/mlx-audio/` | Local only; large downloads are not part of the repo. |
+| Hugging Face cache | `~/.cache/huggingface/hub/models--*/` | Local only; selected model cache is deleted by the model trash button. |
 
 The **Local paths** panel can copy or open the logs and model cache folders in
 Finder. Opening a path creates the folder first if it does not exist yet.

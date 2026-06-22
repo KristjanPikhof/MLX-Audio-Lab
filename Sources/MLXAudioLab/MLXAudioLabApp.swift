@@ -1487,7 +1487,7 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the selected model from the local Hugging Face cache. It does not delete recordings or imported samples.")
+            Text("This removes the selected model from the app cache and the matching Hugging Face cache. It does not delete recordings or imported samples.")
         }
     }
 
