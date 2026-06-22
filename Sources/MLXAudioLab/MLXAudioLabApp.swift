@@ -1728,6 +1728,8 @@ final class ProbeViewModel {
     }
 
     func startRecording() {
+        guard !isStartingRecording else { return }
+
         guard selectedModelCanRecord else {
             status = "Download the selected model before recording"
             errorMessage = "\(selectedModel.displayName) is not available on this Mac yet."
@@ -1742,8 +1744,13 @@ final class ProbeViewModel {
         metrics = TranscriptionMetrics()
         recordingElapsedSeconds = 0
         status = "Requesting microphone access..."
+        isStartingRecording = true
 
         Task {
+            defer {
+                self.isStartingRecording = false
+            }
+
             let granted = await Self.requestMicrophoneAccess()
             ProbeLog.write("microphone access granted=\(granted)")
             guard granted else {
@@ -1790,8 +1797,8 @@ final class ProbeViewModel {
         timerTask?.cancel()
         timerTask = nil
 
-        let elapsed = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? recordingElapsedSeconds
-        recordingElapsedSeconds = elapsed
+        let wallClockElapsed = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? recordingElapsedSeconds
+        recordingElapsedSeconds = wallClockElapsed
         isRecording = false
 
         guard let recordingURL else {
@@ -1800,6 +1807,9 @@ final class ProbeViewModel {
             return
         }
 
+        let durationSeconds = (try? Self.audioDurationSeconds(for: recordingURL)) ?? wallClockElapsed
+        recordingElapsedSeconds = durationSeconds
+
         let option = selectedModel
         self.recordingURL = nil
         let sample = AudioSample(
@@ -1807,7 +1817,7 @@ final class ProbeViewModel {
             url: recordingURL,
             source: .recorded,
             displayName: recordingURL.lastPathComponent,
-            durationSeconds: elapsed,
+            durationSeconds: durationSeconds,
             createdAt: Date()
         )
         replaceCurrentSample(with: sample)
@@ -2152,19 +2162,39 @@ final class ProbeViewModel {
     }
 
     private nonisolated static func cleanupTemporaryAudioFiles() {
-        let directory = recordingDirectory()
-        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+        let rootDirectory = recordingRootDirectory()
+        let currentDirectory = recordingDirectory()
+        let staleCutoff = Date().addingTimeInterval(-24 * 60 * 60)
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: rootDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey]
+        ) else {
             return
         }
 
-        for file in files where file.pathExtension.lowercased() == "wav" {
+        for file in files {
+            guard file != currentDirectory,
+                  let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey]),
+                  values.isDirectory == true,
+                  (values.contentModificationDate ?? .distantPast) < staleCutoff
+            else {
+                continue
+            }
+
             try? FileManager.default.removeItem(at: file)
         }
     }
 
     private nonisolated static func recordingDirectory() -> URL {
+        recordingRootDirectory()
+            .appending(path: recordingSessionDirectoryName, directoryHint: .isDirectory)
+    }
+
+    private nonisolated static func recordingRootDirectory() -> URL {
         FileManager.default.temporaryDirectory.appending(path: "MLXAudioLabRecordings", directoryHint: .isDirectory)
     }
+
+    private nonisolated static let recordingSessionDirectoryName = "session-\(UUID().uuidString)"
 
     private nonisolated static func audioDurationSeconds(for url: URL) throws -> Double {
         let audioFile = try AVAudioFile(forReading: url)
