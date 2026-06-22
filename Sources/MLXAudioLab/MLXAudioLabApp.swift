@@ -46,10 +46,10 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
         ),
         AudioModelOption(
             id: "nemotron-streaming-0.6b-8bit",
-            displayName: "Nemotron 3.5 ASR Streaming 0.6B",
+            displayName: "Nemotron 3.5 ASR Streaming 0.6B 8-bit",
             repoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
             family: .nemotron,
-            downloadSizeDescription: "~721 MB",
+            downloadSizeDescription: "~756 MB",
             downloadSizeBytes: 755_836_822,
             subtitle: "8-bit MLX conversion; smaller download and good for quick local checks.",
             languageHint: "auto",
@@ -157,7 +157,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             downloadSizeBytes: 4_133_263_974,
             subtitle: "Community MLX conversion of Cohere Transcribe; large experimental baseline.",
             languageHint: nil,
-            requiredFileNames: ["config.json", "model.safetensors", "tokenizer.model"]
+            requiredFileNames: ["config.json", "model.safetensors", "tokenizer.model", "tokenizer_config.json"]
         )
     ]
 }
@@ -242,15 +242,12 @@ enum ModelCache {
         ].compactMap(\.self)
 
         for directory in candidates {
-            var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue
-            else {
-                continue
-            }
-
-            try fileManager.removeItem(at: directory)
+            try removeDirectoryIfPresent(directory, fileManager: fileManager)
         }
+    }
+
+    static func deleteAppCache(_ option: AudioModelOption) throws {
+        try removeDirectoryIfPresent(directory(for: option), fileManager: .default)
     }
 
     private static func huggingFaceRepositoryDirectory(for option: AudioModelOption) -> URL? {
@@ -331,6 +328,17 @@ enum ModelCache {
 
     private static func expandTilde(_ path: String) -> String {
         NSString(string: path).expandingTildeInPath
+    }
+
+    private static func removeDirectoryIfPresent(_ directory: URL, fileManager: FileManager) throws {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return
+        }
+
+        try fileManager.removeItem(at: directory)
     }
 }
 
