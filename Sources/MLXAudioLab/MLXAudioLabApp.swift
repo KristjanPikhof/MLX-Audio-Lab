@@ -491,7 +491,7 @@ private final class ModelDownloadProgressState: @unchecked Sendable {
     private let modelName: String
     private let totalBytes: Int64
     private var completedBytes: Int64 = 0
-    private var currentProgress: Progress?
+    private var currentFileBytes: Int64 = 0
     private var currentExpectedBytes: Int64 = 0
 
     init(modelName: String, totalBytes: Int64) {
@@ -499,26 +499,40 @@ private final class ModelDownloadProgressState: @unchecked Sendable {
         self.totalBytes = totalBytes
     }
 
-    func beginFile(expectedBytes: Int64, progress: Progress) {
+    func beginFile(expectedBytes: Int64) {
         lock.lock()
         currentExpectedBytes = max(expectedBytes, 0)
-        currentProgress = progress
+        currentFileBytes = 0
         lock.unlock()
     }
 
     func completeFile(expectedBytes: Int64) {
         lock.lock()
         completedBytes += max(expectedBytes, 0)
+        currentFileBytes = 0
         currentExpectedBytes = 0
-        currentProgress = nil
+        lock.unlock()
+    }
+
+    func updateCurrentExpectedBytes(_ bytes: Int64) {
+        guard bytes > 0 else { return }
+
+        lock.lock()
+        currentExpectedBytes = max(currentExpectedBytes, bytes)
+        lock.unlock()
+    }
+
+    func updateCurrentFileBytes(_ bytes: Int64) {
+        lock.lock()
+        currentFileBytes = max(currentFileBytes, bytes)
         lock.unlock()
     }
 
     func snapshot() -> ModelDownloadProgress {
         lock.lock()
         let currentBytes = min(
-            max(currentProgress?.completedUnitCount ?? 0, 0),
-            currentExpectedBytes
+            max(currentFileBytes, 0),
+            currentExpectedBytes > 0 ? currentExpectedBytes : Int64.max
         )
         let snapshot = ModelDownloadProgress(
             modelName: modelName,
@@ -527,6 +541,188 @@ private final class ModelDownloadProgressState: @unchecked Sendable {
         )
         lock.unlock()
         return snapshot
+    }
+}
+
+private final class ModelDownloadTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDownloadTask?
+
+    func set(_ task: URLSessionDownloadTask) {
+        lock.lock()
+        self.task = task
+        lock.unlock()
+    }
+
+    func resume() {
+        lock.lock()
+        let task = task
+        lock.unlock()
+        task?.resume()
+    }
+
+    func cancel() {
+        lock.lock()
+        let task = task
+        lock.unlock()
+        task?.cancel()
+    }
+}
+
+private final class ModelFileDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private let progressState: ModelDownloadProgressState
+    private let temporaryDestination: URL
+    private let repoID: String
+    private let fileName: String
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var downloadedURL: URL?
+    private var finishError: Error?
+    private var lastLoggedBytes: Int64 = 0
+
+    init(
+        progressState: ModelDownloadProgressState,
+        temporaryDestination: URL,
+        repoID: String,
+        fileName: String
+    ) {
+        self.progressState = progressState
+        self.temporaryDestination = temporaryDestination
+        self.repoID = repoID
+        self.fileName = fileName
+    }
+
+    func setContinuation(_ continuation: CheckedContinuation<URL, Error>) {
+        lock.lock()
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func urlSession(
+        _: URLSession,
+        downloadTask _: URLSessionDownloadTask,
+        didWriteData _: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        if totalBytesExpectedToWrite > 0 {
+            progressState.updateCurrentExpectedBytes(totalBytesExpectedToWrite)
+        }
+        progressState.updateCurrentFileBytes(totalBytesWritten)
+        logProgressIfNeeded(bytes: totalBytesWritten, expectedBytes: totalBytesExpectedToWrite)
+    }
+
+    func urlSession(
+        _: URLSession,
+        downloadTask _: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        do {
+            try? FileManager.default.removeItem(at: temporaryDestination)
+            try FileManager.default.moveItem(at: location, to: temporaryDestination)
+
+            lock.lock()
+            downloadedURL = temporaryDestination
+            lock.unlock()
+        } catch {
+            lock.lock()
+            finishError = error
+            lock.unlock()
+        }
+    }
+
+    func urlSession(
+        _: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        if let error {
+            if (error as? URLError)?.code == .cancelled {
+                finish(.failure(CancellationError()))
+            } else {
+                finish(.failure(error))
+            }
+            return
+        }
+
+        if let httpResponse = task.response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            finish(
+                .failure(
+                    NSError(
+                        domain: "MLXAudioLab.ModelDownload",
+                        code: httpResponse.statusCode,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "Hugging Face returned HTTP \(httpResponse.statusCode) for \(fileName)."
+                        ]
+                    )
+                )
+            )
+            return
+        }
+
+        lock.lock()
+        let finishError = finishError
+        let downloadedURL = downloadedURL
+        lock.unlock()
+
+        if let finishError {
+            finish(.failure(finishError))
+        } else if let downloadedURL {
+            finish(.success(downloadedURL))
+        } else {
+            finish(
+                .failure(
+                    NSError(
+                        domain: "MLXAudioLab.ModelDownload",
+                        code: -1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "The download finished without a temporary file for \(fileName)."
+                        ]
+                    )
+                )
+            )
+        }
+    }
+
+    private func finish(_ result: Result<URL, Error>) {
+        lock.lock()
+        guard let continuation else {
+            lock.unlock()
+            return
+        }
+        self.continuation = nil
+        lock.unlock()
+
+        switch result {
+        case .success(let url):
+            continuation.resume(returning: url)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func logProgressIfNeeded(bytes: Int64, expectedBytes: Int64) {
+        let stepBytes: Int64 = 32 * 1024 * 1024
+        let shouldLog: Bool
+
+        lock.lock()
+        if bytes - lastLoggedBytes >= stepBytes
+            || (expectedBytes > 0 && bytes >= expectedBytes && lastLoggedBytes < expectedBytes) {
+            lastLoggedBytes = bytes
+            shouldLog = true
+        } else {
+            shouldLog = false
+        }
+        lock.unlock()
+
+        if shouldLog {
+            ProbeLog.write(
+                "model file download progress repo=\(repoID) file=\(fileName) bytes=\(bytes) expected=\(expectedBytes)"
+            )
+        }
     }
 }
 
@@ -730,6 +926,7 @@ actor AudioModelTranscriber {
                 client: client,
                 repoID: repoID,
                 option: option,
+                hfToken: hfToken,
                 onDownloadProgress: onDownloadProgress
             )
             await stopDownloadProgressSampler(cacheProgressSampler)
@@ -744,6 +941,7 @@ actor AudioModelTranscriber {
         client: HubClient,
         repoID: Repo.ID,
         option: AudioModelOption,
+        hfToken: String?,
         onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
     ) async throws {
         let modelDirectory = ModelCache.directory(for: option)
@@ -773,8 +971,7 @@ actor AudioModelTranscriber {
                 try Task.checkCancellation()
 
                 let fileBytes = max(Int64(entry.size ?? 1), 1)
-                let fileProgress = Progress(totalUnitCount: fileBytes)
-                progressState.beginFile(expectedBytes: fileBytes, progress: fileProgress)
+                progressState.beginFile(expectedBytes: fileBytes)
                 let destination = modelDirectory.appending(path: entry.path)
 
                 if let cachedPath = client.cache?.cachedFilePath(
@@ -783,23 +980,35 @@ actor AudioModelTranscriber {
                     revision: "main",
                     filename: entry.path
                 ) {
+                    ProbeLog.write(
+                        "model file copy begin repo=\(option.repoID) file=\(entry.path) bytes=\(fileBytes)"
+                    )
                     try await copyFileWithProgress(
                         from: cachedPath,
                         to: destination,
-                        progress: fileProgress
+                        progressState: progressState
+                    )
+                    ProbeLog.write(
+                        "model file copy complete repo=\(option.repoID) file=\(entry.path) bytes=\(fileBytes)"
                     )
                 } else {
-                    _ = try await client.downloadFile(
-                        entry,
-                        from: repoID,
-                        to: destination,
-                        kind: .model,
-                        revision: "main",
-                        progress: fileProgress,
-                        transport: .lfs
+                    ProbeLog.write(
+                        "model file download begin repo=\(option.repoID) file=\(entry.path) bytes=\(fileBytes)"
+                    )
+                    try await downloadFileWithProgress(
+                        client: client,
+                        repoID: repoID,
+                        repoIDText: option.repoID,
+                        entry: entry,
+                        destination: destination,
+                        expectedBytes: fileBytes,
+                        hfToken: hfToken,
+                        progressState: progressState
+                    )
+                    ProbeLog.write(
+                        "model file download complete repo=\(option.repoID) file=\(entry.path) bytes=\(fileBytes)"
                     )
                 }
-                fileProgress.completedUnitCount = fileProgress.totalUnitCount
                 progressState.completeFile(expectedBytes: fileBytes)
                 await emit(state: progressState, onDownloadProgress: onDownloadProgress)
             }
@@ -855,7 +1064,7 @@ actor AudioModelTranscriber {
     private func copyFileWithProgress(
         from source: URL,
         to destination: URL,
-        progress: Progress
+        progressState: ModelDownloadProgressState
     ) async throws {
         let fileManager = FileManager.default
         let resolvedSource = source.resolvingSymlinksInPath()
@@ -889,13 +1098,98 @@ actor AudioModelTranscriber {
             }
 
             try output.write(contentsOf: data)
-            progress.completedUnitCount += Int64(data.count)
+            let writtenBytes = try output.offset()
+            progressState.updateCurrentFileBytes(Int64(writtenBytes))
             await Task.yield()
         }
 
         try? fileManager.removeItem(at: destination)
         try fileManager.moveItem(at: temporaryDestination, to: destination)
         didFinish = true
+    }
+
+    private func downloadFileWithProgress(
+        client: HubClient,
+        repoID: Repo.ID,
+        repoIDText: String,
+        entry: Git.TreeEntry,
+        destination: URL,
+        expectedBytes: Int64,
+        hfToken: String?,
+        progressState: ModelDownloadProgressState
+    ) async throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let temporaryDestination = destination
+            .deletingLastPathComponent()
+            .appending(path: ".\(destination.lastPathComponent).download-\(UUID().uuidString)")
+        try? fileManager.removeItem(at: temporaryDestination)
+
+        var request = URLRequest(url: resolveURL(client: client, repoID: repoID, entry: entry))
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let userAgent = client.userAgent {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
+        let bearerToken = if let hfToken, !hfToken.isEmpty {
+            hfToken
+        } else {
+            await client.bearerToken
+        }
+        if let bearerToken, !bearerToken.isEmpty {
+            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+
+        let delegate = ModelFileDownloadDelegate(
+            progressState: progressState,
+            temporaryDestination: temporaryDestination,
+            repoID: repoIDText,
+            fileName: entry.path
+        )
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let taskBox = ModelDownloadTaskBox()
+        taskBox.set(session.downloadTask(with: request))
+
+        defer {
+            session.invalidateAndCancel()
+            try? fileManager.removeItem(at: temporaryDestination)
+        }
+
+        let downloadedTemporaryURL = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+                delegate.setContinuation(continuation)
+                taskBox.resume()
+            }
+        } onCancel: {
+            taskBox.cancel()
+        }
+
+        let downloadedBytes = fileSize(at: downloadedTemporaryURL)
+        if downloadedBytes > 0 {
+            progressState.updateCurrentFileBytes(downloadedBytes)
+        } else if expectedBytes > 1 {
+            throw Self.makeError("Downloaded \(entry.path) was empty.")
+        }
+
+        try? fileManager.removeItem(at: destination)
+        try fileManager.moveItem(at: downloadedTemporaryURL, to: destination)
+    }
+
+    private func resolveURL(client: HubClient, repoID: Repo.ID, entry: Git.TreeEntry) -> URL {
+        client.host
+            .appending(path: repoID.namespace)
+            .appending(path: repoID.name)
+            .appending(path: "resolve")
+            .appending(component: "main")
+            .appending(path: entry.path)
+    }
+
+    private func fileSize(at url: URL) -> Int64 {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        return Int64(size)
     }
 
     private func startModelProgressSampler(
