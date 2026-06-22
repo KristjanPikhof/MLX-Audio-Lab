@@ -942,75 +942,58 @@ actor AudioModelTranscriber {
 
         let generationStart = ContinuousClock.now
         let parameters = generationParameters(for: loadedModel, option: option)
+        let chunkSamples = Self.chunkSampleCount(for: parameters)
+        let totalChunks = Int(ceil(Double(totalSamples) / Double(chunkSamples)))
         ProbeLog.write(
-            "generation begin repo=\(option.repoID) chunkSeconds=\(parameters.chunkDuration) samples=\(totalSamples)"
+            "generation begin repo=\(option.repoID) chunkSeconds=\(parameters.chunkDuration) chunks=\(totalChunks) samples=\(totalSamples)"
         )
-        var streamedText = ""
-        var finalOutput: STTOutput?
+        var transcriptParts: [String] = []
         var modelReportedSeconds = 0.0
-        var tokenEventsSinceUpdate = 0
-        var lastPartialTranscriptUpdate = Date.distantPast
 
-        for try await event in loadedModel.generateStream(
-            audio: audio,
-            generationParameters: parameters
-        ) {
+        for chunkIndex in 0..<totalChunks {
             try Task.checkCancellation()
 
-            switch event {
-            case .token(let token):
-                streamedText += token
-                tokenEventsSinceUpdate += 1
+            let startSample = chunkIndex * chunkSamples
+            let endSample = min(startSample + chunkSamples, totalSamples)
+            let chunkAudio = audio[startSample..<endSample]
+            let chunkDurationSeconds = Double(endSample - startSample) / Double(Self.sampleRate)
+            ProbeLog.write(
+                "generation chunk begin repo=\(option.repoID) index=\(chunkIndex + 1)/\(totalChunks) durationSeconds=\(chunkDurationSeconds)"
+            )
 
-                let partialTranscript = streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard Self.shouldEmitPartialTranscript(
-                    partialTranscript,
-                    tokenEventsSinceUpdate: tokenEventsSinceUpdate,
-                    lastUpdate: lastPartialTranscriptUpdate
-                ) else {
-                    continue
-                }
+            let output = loadedModel.generate(
+                audio: chunkAudio,
+                generationParameters: parameters
+            )
+            modelReportedSeconds += output.totalTime
+            Self.updateGenerationMetrics(
+                &metrics,
+                generationStart: generationStart,
+                modelReportedSeconds: modelReportedSeconds,
+                totalStart: totalStart
+            )
+            await onMetricsUpdate?(metrics)
 
-                tokenEventsSinceUpdate = 0
-                lastPartialTranscriptUpdate = Date()
-                Self.updateGenerationMetrics(
-                    &metrics,
-                    generationStart: generationStart,
-                    modelReportedSeconds: modelReportedSeconds,
-                    totalStart: totalStart
-                )
-                await onMetricsUpdate?(metrics)
-                await onPartialTranscript?(partialTranscript)
-
-            case .info(let info):
-                modelReportedSeconds = max(modelReportedSeconds, info.generateTime)
-                Self.updateGenerationMetrics(
-                    &metrics,
-                    generationStart: generationStart,
-                    modelReportedSeconds: modelReportedSeconds,
-                    totalStart: totalStart
-                )
-                await onMetricsUpdate?(metrics)
-
-            case .result(let output):
-                finalOutput = output
-                modelReportedSeconds = max(modelReportedSeconds, output.totalTime)
-                Self.updateGenerationMetrics(
-                    &metrics,
-                    generationStart: generationStart,
-                    modelReportedSeconds: modelReportedSeconds,
-                    totalStart: totalStart
-                )
-                await onMetricsUpdate?(metrics)
-
-                let outputText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !outputText.isEmpty {
-                    await onPartialTranscript?(outputText)
-                }
+            try Task.checkCancellation()
+            let chunkText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !chunkText.isEmpty {
+                transcriptParts.append(chunkText)
             }
+
+            let partialTranscript = transcriptParts.joined(separator: " ")
+            if !partialTranscript.isEmpty {
+                await onPartialTranscript?(partialTranscript)
+                ProbeLog.write(
+                    "partial transcript emitted repo=\(option.repoID) index=\(chunkIndex + 1)/\(totalChunks) textLength=\(partialTranscript.count)"
+                )
+            }
+
+            ProbeLog.write(
+                "generation chunk complete repo=\(option.repoID) index=\(chunkIndex + 1)/\(totalChunks) textLength=\(output.text.count)"
+            )
         }
 
-        let transcript = (finalOutput?.text ?? streamedText).trimmingCharacters(in: .whitespacesAndNewlines)
+        let transcript = transcriptParts.joined(separator: " ")
         let generationSeconds = Self.seconds(since: generationStart)
         ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(transcript.count)")
 
@@ -1475,17 +1458,6 @@ actor AudioModelTranscriber {
         )
     }
 
-    private static func shouldEmitPartialTranscript(
-        _ transcript: String,
-        tokenEventsSinceUpdate: Int,
-        lastUpdate: Date
-    ) -> Bool {
-        guard !transcript.isEmpty else { return false }
-        if lastUpdate == .distantPast { return true }
-        if tokenEventsSinceUpdate >= 4 { return true }
-        return Date().timeIntervalSince(lastUpdate) >= 0.2
-    }
-
     private static func updateGenerationMetrics(
         _ metrics: inout TranscriptionMetrics,
         generationSeconds: Double,
@@ -1495,6 +1467,13 @@ actor AudioModelTranscriber {
         metrics.generationSeconds = generationSeconds
         metrics.modelReportedSeconds = modelReportedSeconds
         metrics.totalSeconds = seconds(since: totalStart)
+    }
+
+    private static func chunkSampleCount(for parameters: STTGenerateParameters) -> Int {
+        let chunkDuration = parameters.chunkDuration > 0
+            ? Double(parameters.chunkDuration)
+            : Double(safeDecodeChunkDurationSeconds)
+        return max(1, Int(chunkDuration * Double(sampleRate)))
     }
 
     private static func seconds(since start: ContinuousClock.Instant) -> Double {
