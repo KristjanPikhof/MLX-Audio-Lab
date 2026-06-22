@@ -1359,6 +1359,7 @@ actor AudioModelTranscriber {
 @Observable
 final class ProbeViewModel {
     var isRecording = false
+    var isStartingRecording = false
     var isTranscribing = false
     var isCancellingTranscription = false
     var isPreparingModel = false
@@ -1376,7 +1377,12 @@ final class ProbeViewModel {
     var loadedModelIDs: Set<String> = []
     var currentSample: AudioSample?
     var status = "Ready"
-    var transcript = ""
+    var transcriptStatistics = TranscriptStatistics.empty
+    var transcript = "" {
+        didSet {
+            transcriptStatistics = TranscriptStatistics.calculate(from: transcript)
+        }
+    }
     var errorMessage: String?
     var transcriptExportMessage: String?
     var pathActionMessage: String?
@@ -1405,6 +1411,7 @@ final class ProbeViewModel {
 
     var primaryButtonTitle: String {
         if isRecording { return "Stop" }
+        if isStartingRecording { return "Starting..." }
         if isCancellingTranscription { return "Cancelling..." }
         if isTranscribing || isProcessingImport { return "Working..." }
         return "Record"
@@ -1414,15 +1421,25 @@ final class ProbeViewModel {
         if isRecording {
             return !isPreparingModel && !isTranscribing && !isProcessingImport && !isDeletingModel
         }
-        return !isTranscribing && !isPreparingModel && !isProcessingImport && !isDeletingModel && selectedModelCanRecord
+        return !isStartingRecording
+            && !isTranscribing
+            && !isPreparingModel
+            && !isProcessingImport
+            && !isDeletingModel
+            && selectedModelCanRecord
     }
 
     var modelControlsDisabled: Bool {
-        isRecording || isTranscribing || isPreparingModel || isProcessingImport || isDeletingModel
+        isRecording || isStartingRecording || isTranscribing || isPreparingModel || isProcessingImport || isDeletingModel
     }
 
     var canImportAudio: Bool {
-        !isRecording && !isTranscribing && !isPreparingModel && !isProcessingImport && !isDeletingModel
+        !isRecording
+            && !isStartingRecording
+            && !isTranscribing
+            && !isPreparingModel
+            && !isProcessingImport
+            && !isDeletingModel
     }
 
     var selectedModel: AudioModelOption {
@@ -1507,6 +1524,7 @@ final class ProbeViewModel {
 
     var canRunSelectedModel: Bool {
         !isRecording
+            && !isStartingRecording
             && !isTranscribing
             && !isPreparingModel
             && !isProcessingImport
@@ -1546,27 +1564,7 @@ final class ProbeViewModel {
     }
 
     var hasTranscriptOutput: Bool {
-        !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var transcriptStatistics: TranscriptStatistics {
-        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTranscript.isEmpty else {
-            return TranscriptStatistics(words: 0, letters: 0, characters: 0, lines: 0)
-        }
-
-        let words = trimmedTranscript.split { character in
-            !character.isLetter && !character.isNumber
-        }.count
-        let letters = trimmedTranscript.filter(\.isLetter).count
-        let lines = trimmedTranscript.components(separatedBy: .newlines).count
-
-        return TranscriptStatistics(
-            words: words,
-            letters: letters,
-            characters: trimmedTranscript.count,
-            lines: lines
-        )
+        transcriptStatistics.characters > 0
     }
 
     func primaryButtonPressed() {
@@ -1578,13 +1576,10 @@ final class ProbeViewModel {
     }
 
     func refreshModelAvailability(updateStatus: Bool = false) {
-        modelAvailability = Dictionary(
-            uniqueKeysWithValues: AudioModelOption.supported.map { option in
-                (option.id, ModelCache.availability(for: option))
-            }
-        )
+        let option = selectedModel
+        modelAvailability[option.id] = ModelCache.availability(for: option)
 
-        if updateStatus, !isRecording, !isTranscribing, !isPreparingModel {
+        if updateStatus, !isRecording, !isStartingRecording, !isTranscribing, !isPreparingModel {
             status = idleStatusForSelectedModel()
         }
     }
