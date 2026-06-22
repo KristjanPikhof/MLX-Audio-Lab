@@ -18,7 +18,7 @@ model, download it from Hugging Face when needed, record audio or import media,
 and compare model load and generation speed. More compatible MLX audio models
 will be added as the Swift runtime support matures.
 
-<img width="1232" height="894" alt="image" src="https://github.com/user-attachments/assets/10675ff8-7dbc-4b24-8f9b-98d04f9c6216" />
+<img width="1000" height="auto" alt="image" src="https://github.com/user-attachments/assets/529b5416-0ec7-403f-a5fc-82c9345ab49b" />
 
 ## Supported models
 
