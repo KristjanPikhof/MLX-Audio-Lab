@@ -487,6 +487,107 @@ struct ModelDownloadProgress: Equatable, Sendable {
     }
 }
 
+private final class WAVConversionSession: @unchecked Sendable {
+    private let reader: AVAssetReader
+    private let output: AVAssetReaderAudioMixOutput
+    private let writer: AVAssetWriter
+    private let input: AVAssetWriterInput
+    private let processingQueue = DispatchQueue(label: "MLXAudioLab.wav-conversion", qos: .userInitiated)
+
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var didResume = false
+
+    init(
+        reader: AVAssetReader,
+        output: AVAssetReaderAudioMixOutput,
+        writer: AVAssetWriter,
+        input: AVAssetWriterInput
+    ) {
+        self.reader = reader
+        self.output = output
+        self.writer = writer
+        self.input = input
+    }
+
+    func run() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            self.continuation = continuation
+            input.requestMediaDataWhenReady(on: processingQueue) {
+                self.processAvailableMediaData()
+            }
+        }
+    }
+
+    private func processAvailableMediaData() {
+        while input.isReadyForMoreMediaData {
+            guard reader.status == .reading else {
+                completeWriter()
+                return
+            }
+
+            guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                completeWriter()
+                return
+            }
+
+            guard input.append(sampleBuffer) else {
+                reader.cancelReading()
+                writer.cancelWriting()
+                complete(.failure(writer.error ?? Self.makeError("The selected media file could not be converted to WAV.")))
+                return
+            }
+        }
+    }
+
+    private func completeWriter() {
+        input.markAsFinished()
+
+        if reader.status == .failed || reader.status == .cancelled {
+            writer.cancelWriting()
+            complete(.failure(reader.error ?? Self.makeError("The selected media file could not be read.")))
+            return
+        }
+
+        writer.finishWriting {
+            self.processingQueue.async {
+                guard self.writer.status == .completed else {
+                    self.complete(
+                        .failure(
+                            self.writer.error ?? Self.makeError("The selected media file could not be converted to WAV.")
+                        )
+                    )
+                    return
+                }
+
+                self.complete(.success(()))
+            }
+        }
+    }
+
+    private func complete(_ result: Result<Void, Error>) {
+        guard !didResume else { return }
+        didResume = true
+
+        guard let continuation else { return }
+        self.continuation = nil
+
+        switch result {
+        case .success:
+            continuation.resume()
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private static func makeError(_ description: String) -> NSError {
+        NSError(
+            domain: "MLXAudioLab",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: description]
+        )
+    }
+}
+
 private final class ModelDownloadProgressState: @unchecked Sendable {
     private let lock = NSLock()
     private let modelName: String
@@ -2152,68 +2253,13 @@ final class ProbeViewModel {
 
         writer.startSession(atSourceTime: .zero)
 
-        let processingQueue = DispatchQueue(label: "MLXAudioLab.wav-conversion", qos: .userInitiated)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var didResume = false
-
-            func complete(_ result: Result<Void, Error>) {
-                guard !didResume else { return }
-                didResume = true
-
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-
-            func completeWriter() {
-                input.markAsFinished()
-
-                if reader.status == .failed || reader.status == .cancelled {
-                    writer.cancelWriting()
-                    complete(.failure(reader.error ?? makeError("The selected media file could not be read.")))
-                    return
-                }
-
-                writer.finishWriting {
-                    processingQueue.async {
-                        guard writer.status == .completed else {
-                            complete(
-                                .failure(
-                                    writer.error ?? makeError("The selected media file could not be converted to WAV.")
-                                )
-                            )
-                            return
-                        }
-
-                        complete(.success(()))
-                    }
-                }
-            }
-
-            input.requestMediaDataWhenReady(on: processingQueue) {
-                while input.isReadyForMoreMediaData {
-                    guard reader.status == .reading else {
-                        completeWriter()
-                        return
-                    }
-
-                    guard let sampleBuffer = output.copyNextSampleBuffer() else {
-                        completeWriter()
-                        return
-                    }
-
-                    guard input.append(sampleBuffer) else {
-                        reader.cancelReading()
-                        writer.cancelWriting()
-                        complete(.failure(writer.error ?? makeError("The selected media file could not be converted to WAV.")))
-                        return
-                    }
-                }
-            }
-        }
+        let conversionSession = WAVConversionSession(
+            reader: reader,
+            output: output,
+            writer: writer,
+            input: input
+        )
+        try await conversionSession.run()
     }
 
     private func replaceCurrentSample(with sample: AudioSample) {
