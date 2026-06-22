@@ -1400,10 +1400,12 @@ struct TranscriptWorkspace: View {
             Spacer()
 
             StatusCapsule(
-                text: model.status,
+                text: statusTitle,
                 symbol: statusSymbol,
-                tint: statusTint
+                tint: statusTint,
+                isProgressing: statusShowsProgress
             )
+            .help(model.status)
 
             if model.isRecording {
                 Text(formatSeconds(model.recordingElapsedSeconds))
@@ -1441,18 +1443,32 @@ struct TranscriptWorkspace: View {
         }
     }
 
+    private var statusTitle: String {
+        if model.isRecording { return "Recording" }
+        if model.isProcessingImport { return "Importing" }
+        if model.isPreparingModel { return "Preparing model" }
+        if model.isDeletingModel { return "Deleting model" }
+        if model.isTranscribing { return "Transcribing" }
+        if model.errorMessage != nil { return "Needs attention" }
+        if model.status.localizedCaseInsensitiveContains("finished") { return "Finished" }
+        return "Ready"
+    }
+
     private var statusSymbol: String {
         if model.isRecording { return "record.circle.fill" }
-        if model.isTranscribing || model.isPreparingModel { return "hourglass" }
         if model.errorMessage != nil { return "exclamationmark.triangle.fill" }
         return "checkmark.circle.fill"
     }
 
     private var statusTint: Color {
         if model.isRecording { return .red }
-        if model.isTranscribing || model.isPreparingModel { return .orange }
+        if statusShowsProgress { return .orange }
         if model.errorMessage != nil { return .red }
         return .green
+    }
+
+    private var statusShowsProgress: Bool {
+        model.isTranscribing || model.isPreparingModel || model.isProcessingImport || model.isDeletingModel
     }
 
     private func formatSeconds(_ seconds: Double) -> String {
@@ -1525,15 +1541,30 @@ struct StatusCapsule: View {
     let text: String
     let symbol: String
     let tint: Color
+    var isProgressing = false
 
     var body: some View {
-        Label(text, systemImage: symbol)
-            .font(.callout.weight(.medium))
-            .lineLimit(1)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .foregroundStyle(tint)
-            .labGlassPanel(cornerRadius: 14, tint: tint.opacity(0.12), interactive: false)
+        HStack(spacing: 8) {
+            if isProgressing {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.72)
+                    .tint(tint)
+                    .frame(width: 13, height: 13)
+            } else {
+                Image(systemName: symbol)
+                    .font(.caption.weight(.semibold))
+            }
+
+            Text(text)
+                .lineLimit(1)
+        }
+        .font(.caption.weight(.semibold))
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .foregroundStyle(tint)
+        .fixedSize(horizontal: true, vertical: false)
+        .labGlassPanel(cornerRadius: 13, tint: tint.opacity(0.10), interactive: false)
     }
 }
 
