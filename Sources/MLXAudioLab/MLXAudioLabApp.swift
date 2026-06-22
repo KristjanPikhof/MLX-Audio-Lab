@@ -3187,6 +3187,12 @@ struct PathActionRow: View {
     let value: String
     let model: ProbeViewModel
 
+    private enum Layout {
+        static let actionButtonWidth: CGFloat = 64
+        static let actionButtonHeight: CGFloat = 34
+        static let actionIconWidth: CGFloat = 24
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
@@ -3203,27 +3209,41 @@ struct PathActionRow: View {
 
             Spacer(minLength: 8)
 
-            Button {
+            actionButton(
+                symbol: "doc.on.doc",
+                help: "Copy \(title.lowercased()) path",
+                accessibilityLabel: "Copy \(title) path"
+            ) {
                 model.copyPath(value, title: title)
-            } label: {
-                Image(systemName: "doc.on.doc")
-                    .frame(width: 24)
             }
-            .labButtonStyle()
-            .help("Copy \(title.lowercased()) path")
-            .accessibilityLabel("Copy \(title) path")
 
-            Button {
+            actionButton(
+                symbol: "folder",
+                help: "Open \(title.lowercased()) folder in Finder",
+                accessibilityLabel: "Open \(title) folder in Finder"
+            ) {
                 model.openPathInFinder(value, title: title)
-            } label: {
-                Image(systemName: "folder")
-                    .frame(width: 24)
             }
-            .labButtonStyle()
-            .help("Open \(title.lowercased()) folder in Finder")
-            .accessibilityLabel("Open \(title) folder in Finder")
         }
         .padding(.vertical, 3)
+    }
+
+    private func actionButton(
+        symbol: String,
+        help: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.body.weight(.medium))
+                .frame(width: Layout.actionIconWidth)
+                .frame(width: Layout.actionButtonWidth, height: Layout.actionButtonHeight)
+                .contentShape(Rectangle())
+        }
+        .labButtonStyle()
+        .help(help)
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private var displayPath: String {
