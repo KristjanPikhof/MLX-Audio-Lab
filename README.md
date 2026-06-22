@@ -8,6 +8,9 @@ model, download it from Hugging Face when needed, record audio or import media,
 and compare model load and generation speed. More compatible MLX audio models
 will be added soon.
 
+<img width="1232" height="894" alt="image" src="https://github.com/user-attachments/assets/10675ff8-7dbc-4b24-8f9b-98d04f9c6216" />
+
+
 ## Supported models
 
 | Model | Hugging Face repo | Approx. download | Notes |
