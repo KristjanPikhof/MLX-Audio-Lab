@@ -3,7 +3,7 @@
 [![Swift 6.2](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)](Package.swift)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-0A84FF?logo=apple&logoColor=white)](Package.swift)
 [![SwiftPM](https://img.shields.io/badge/build-SwiftPM-6E6E73)](Package.swift)
-[![Apple Silicon recommended](https://img.shields.io/badge/Apple%20Silicon-recommended-111111?logo=apple&logoColor=white)](#requirements)
+[![Apple Silicon default](https://img.shields.io/badge/Apple%20Silicon-default%20run-111111?logo=apple&logoColor=white)](#requirements)
 [![MLX local ASR](https://img.shields.io/badge/MLX-local%20ASR-00A67E)](#supported-models)
 [![Models: 11 options](https://img.shields.io/badge/models-11%20options-7C3AED)](#supported-models)
 [![Media import](https://img.shields.io/badge/import-audio%20%2B%20video-2563EB)](#quick-start)
@@ -37,7 +37,7 @@ for each family.
 | SenseVoice Small | `mlx-community/SenseVoiceSmall` | 936 MB | Non-autoregressive ASR with language, emotion, and event metadata. |
 | GLM-ASR Nano 2512 4-bit | `mlx-community/GLM-ASR-Nano-2512-4bit` | 1.28 GB | English/Chinese ASR model with GLM decoder. |
 | Granite 4.0 1B Speech 5-bit | `mlx-community/granite-4.0-1b-speech-5bit` | 2.22 GB | ASR and translation-style speech model. |
-| Voxtral Mini 4B Realtime 4-bit | `mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit` | 3.13 GB | Heavy streaming STT model; benchmarked here through offline chunks. |
+| Voxtral Mini 4B Realtime 4-bit | `mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit` | 3.13 GB | Heavy streaming STT model; benchmarked here through file-based streaming. |
 | Cohere Transcribe 03-2026 fp16 | `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` | 3.85 GiB | Large community MLX conversion for experimental comparison. |
 
 ### Researched candidates
@@ -138,8 +138,8 @@ downloaded model from local disk.
 
 The app reports audio length, audio load, model load, generation, model-reported
 time, and total time separately. These metrics update as audio load, model load,
-and each decode chunk completes. In local tests, model load was usually under 2
-seconds; long waits came from generation over long media files.
+and streaming generation events arrive. In local tests, model load was usually
+under 2 seconds; long waits came from generation over long media files.
 
 Imported media is normalized to 16 kHz mono WAV, then transcribed with the
 model streaming API using a 30-second chunk duration. Very long files can still
@@ -155,7 +155,7 @@ finishes, so it may take a few seconds to settle on slower runs.
 | App icon | `Assets/AppIcon.svg`, `Sources/MLXAudioLab/Resources/AppIcon.icns` | Safe to commit. |
 | Build output | `.derivedData/`, `.build/`, `.run/`, `*.app` | Ignored by `.gitignore`. |
 | Runtime logs | `~/Library/Caches/MLXAudioLab/` | Local only; do not commit. |
-| Temporary audio | macOS temporary directory | Recorded/imported media is converted to session-only WAV and deleted when cleared, replaced, or on next launch. |
+| Temporary audio | macOS temporary directory | Recorded/imported media is converted to session-only WAV and deleted when cleared, replaced, or when stale session folders are cleaned on launch. |
 | Model cache | `~/.cache/huggingface/hub/mlx-audio/` | Local only; large downloads are not part of the repo. |
 | Hugging Face cache | `~/.cache/huggingface/hub/models--*/` | Local only; selected model cache is deleted by the model trash button. |
 
