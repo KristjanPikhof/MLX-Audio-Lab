@@ -804,6 +804,7 @@ actor AudioModelTranscriber {
     private static let safeDecodeChunkDurationSeconds: Float = 30
 
     private var loadedModels: [String: any STTGenerationModel] = [:]
+    private var loadingModelIDs: Set<String> = []
 
     func prepareModel(
         _ option: AudioModelOption,
@@ -929,7 +930,22 @@ actor AudioModelTranscriber {
             return model
         }
 
+        while loadingModelIDs.contains(option.id) {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(100))
+
+            if let model = loadedModels[option.id] {
+                ProbeLog.write("model joined in-flight load repo=\(option.repoID)")
+                return model
+            }
+        }
+
         ProbeLog.write("model load begin repo=\(option.repoID)")
+        loadingModelIDs.insert(option.id)
+        defer {
+            loadingModelIDs.remove(option.id)
+        }
+
         let model: any STTGenerationModel
         switch option.family {
         case .nemotron:
@@ -978,28 +994,17 @@ actor AudioModelTranscriber {
         }
 
         if ModelCache.availability(for: option) == .incomplete {
-            try ModelCache.delete(option)
+            try ModelCache.deleteAppCache(option)
         }
-
-        let cacheProgressSampler = startDownloadProgressSampler(
-            for: option,
-            onDownloadProgress: onDownloadProgress
-        )
 
         ProbeLog.write("model cache download begin repo=\(option.repoID)")
-        do {
-            try await downloadModelSnapshot(
-                client: client,
-                repoID: repoID,
-                option: option,
-                hfToken: hfToken,
-                onDownloadProgress: onDownloadProgress
-            )
-            await stopDownloadProgressSampler(cacheProgressSampler)
-        } catch {
-            await stopDownloadProgressSampler(cacheProgressSampler)
-            throw error
-        }
+        try await downloadModelSnapshot(
+            client: client,
+            repoID: repoID,
+            option: option,
+            hfToken: hfToken,
+            onDownloadProgress: onDownloadProgress
+        )
         ProbeLog.write("model cache download complete repo=\(option.repoID)")
     }
 
@@ -1278,30 +1283,6 @@ actor AudioModelTranscriber {
         onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
     ) async {
         await onDownloadProgress?(state.snapshot())
-    }
-
-    private func startDownloadProgressSampler(
-        for option: AudioModelOption,
-        onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
-    ) -> Task<Void, Never>? {
-        guard let onDownloadProgress else { return nil }
-
-        return Task.detached(priority: .utility) { [option, onDownloadProgress] in
-            while !Task.isCancelled {
-                let completedBytes = ModelCache.downloadedByteCount(for: option)
-                if completedBytes > 0 {
-                    await onDownloadProgress(
-                        ModelDownloadProgress(
-                            modelName: option.displayName,
-                            completedBytes: completedBytes,
-                            totalBytes: option.downloadSizeBytes
-                        )
-                    )
-                }
-
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-        }
     }
 
     private func stopDownloadProgressSampler(_ sampler: Task<Void, Never>?) async {
