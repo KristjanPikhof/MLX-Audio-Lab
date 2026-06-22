@@ -892,6 +892,7 @@ struct ContentView: View {
             header
             modelPicker
             controls
+            sampleView
             metricsView
             transcriptView
             footer
@@ -901,6 +902,15 @@ struct ContentView: View {
         .onAppear {
             model.refreshModelAvailability(updateStatus: true)
         }
+        .fileImporter(
+            isPresented: $model.isImportingAudio,
+            allowedContentTypes: [.wav],
+            allowsMultipleSelection: false
+        ) { result in
+            model.handleImportedAudio(result)
+        }
+        .fileDialogMessage("Select a WAV file for local MLX audio testing.")
+        .fileDialogConfirmationLabel("Import WAV")
     }
 
     private var header: some View {
@@ -988,6 +998,22 @@ struct ContentView: View {
             .controlSize(.large)
             .disabled(model.isRecording || model.isTranscribing || model.isPreparingModel)
 
+            Button {
+                model.beginImportAudio()
+            } label: {
+                Label("Import WAV", systemImage: "square.and.arrow.down")
+            }
+            .controlSize(.large)
+            .disabled(!model.canImportAudio)
+
+            Button {
+                model.runSelectedModelForCurrentSample()
+            } label: {
+                Label("Run Selected Model", systemImage: "play.fill")
+            }
+            .controlSize(.large)
+            .disabled(!model.canRunSelectedModel)
+
             Spacer()
 
             VStack(alignment: .trailing, spacing: 2) {
@@ -1000,10 +1026,42 @@ struct ContentView: View {
         }
     }
 
+    private var sampleView: some View {
+        HStack(spacing: 12) {
+            if let sample = model.currentSample {
+                Label(sample.source.displayName, systemImage: sample.source.systemImage)
+                    .font(.headline)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(sample.displayName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("Audio length \(formatSeconds(sample.durationSeconds))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Label(model.currentSampleDescription, systemImage: model.currentSampleIcon)
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if !model.runSelectedModelDisabledText.isEmpty {
+                Text(model.runSelectedModelDisabledText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 8))
+    }
+
     private var metricsView: some View {
         Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 8) {
             GridRow {
-                MetricCell(title: "Recording", value: formatSeconds(model.metrics.recordingSeconds))
+                MetricCell(title: "Audio length", value: formatSeconds(model.metrics.audioSeconds))
                 MetricCell(title: "Audio load", value: formatSeconds(model.metrics.audioLoadSeconds))
                 MetricCell(
                     title: model.metrics.wasModelAlreadyLoaded ? "Model load cached" : "Model load",
