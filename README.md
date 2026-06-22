@@ -28,7 +28,8 @@ for each family.
 
 | Model | Hugging Face repo | Approx. download | Notes |
 |---|---|---:|---|
-| Nemotron 3.5 ASR Streaming 0.6B | `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit` | 721 MB | Smaller 8-bit MLX ASR model. |
+| Nemotron 3.5 ASR Streaming 0.6B bf16 | `mlx-community/nemotron-3.5-asr-streaming-0.6b` | 1.28 GB | Full-quality bf16 MLX conversion and recommended default. |
+| Nemotron 3.5 ASR Streaming 0.6B 8-bit | `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit` | 756 MB | Smaller 8-bit MLX ASR model; model card says quality matches bf16. |
 | Parakeet TDT 0.6B v3 | `mlx-community/parakeet-tdt-0.6b-v3` | 2.51 GB | MLX conversion of NVIDIA Parakeet v3 for multilingual ASR comparison. |
 | Qwen3 ASR 0.6B 4-bit | `mlx-community/Qwen3-ASR-0.6B-4bit` | 708 MB | Compact Qwen3 ASR option for fast comparison. |
 | Qwen3 ASR 1.7B 4-bit | `mlx-community/Qwen3-ASR-1.7B-4bit` | 1.6 GB | Larger Qwen3 ASR option for quality and speed checks. |
@@ -76,6 +77,7 @@ cache under the `mlx-audio` folder:
 The current model folders are:
 
 ```text
+~/.cache/huggingface/hub/mlx-audio/mlx-community_nemotron-3.5-asr-streaming-0.6b
 ~/.cache/huggingface/hub/mlx-audio/mlx-community_nemotron-3.5-asr-streaming-0.6b-8bit
 ~/.cache/huggingface/hub/mlx-audio/mlx-community_parakeet-tdt-0.6b-v3
 ~/.cache/huggingface/hub/mlx-audio/mlx-community_Qwen3-ASR-0.6B-4bit

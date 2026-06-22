@@ -32,6 +32,16 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
 
     static let supported: [AudioModelOption] = [
         AudioModelOption(
+            id: "nemotron-streaming-0.6b-bf16",
+            displayName: "Nemotron 3.5 ASR Streaming 0.6B bf16",
+            repoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b",
+            family: .nemotron,
+            downloadSizeDescription: "~1.28 GB",
+            subtitle: "Full-quality bf16 MLX conversion; larger than 8-bit but the recommended default.",
+            languageHint: "auto",
+            requiredFileNames: ["config.json", "model.safetensors", "vocab.txt"]
+        ),
+        AudioModelOption(
             id: "nemotron-streaming-0.6b-8bit",
             displayName: "Nemotron 3.5 ASR Streaming 0.6B",
             repoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
