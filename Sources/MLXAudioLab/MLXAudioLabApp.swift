@@ -375,6 +375,8 @@ struct AudioSample: Identifiable, Sendable {
 }
 
 enum ProbeLog {
+    private static let writeLock = NSLock()
+
     static func configureProcessOutput() {
         let directory = logDirectory()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -390,6 +392,11 @@ enum ProbeLog {
         let timestamp = ISO8601DateFormatter().string(from: Date())
         let line = "\(timestamp) \(message)\n"
         let url = logDirectory().appending(path: "mlx-audio-lab.log")
+
+        writeLock.lock()
+        defer {
+            writeLock.unlock()
+        }
 
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
@@ -768,6 +775,28 @@ struct TranscriptStatistics: Sendable {
     let letters: Int
     let characters: Int
     let lines: Int
+
+    static let empty = TranscriptStatistics(words: 0, letters: 0, characters: 0, lines: 0)
+
+    static func calculate(from text: String) -> TranscriptStatistics {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            return .empty
+        }
+
+        let words = trimmedText.split { character in
+            !character.isLetter && !character.isNumber
+        }.count
+        let letters = trimmedText.filter(\.isLetter).count
+        let lines = trimmedText.components(separatedBy: .newlines).count
+
+        return TranscriptStatistics(
+            words: words,
+            letters: letters,
+            characters: trimmedText.count,
+            lines: lines
+        )
+    }
 }
 
 actor AudioModelTranscriber {
