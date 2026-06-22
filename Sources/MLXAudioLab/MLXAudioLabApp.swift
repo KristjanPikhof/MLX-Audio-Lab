@@ -977,7 +977,6 @@ struct LabSidebar: View {
             ModelSetupPanel(model: model)
             SampleControlPanel(model: model)
             SystemPathsPanel(model: model)
-            Spacer(minLength: 0)
         }
         .frame(maxHeight: .infinity, alignment: .top)
     }
@@ -1315,7 +1314,7 @@ struct SystemPathsPanel: View {
             PathLine(title: "Models", value: model.modelCacheRootPath)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .labGlassPanel(cornerRadius: 16, tint: .white.opacity(0.03), interactive: false)
     }
 }
