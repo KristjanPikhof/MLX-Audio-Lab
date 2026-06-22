@@ -868,49 +868,57 @@ actor AudioModelTranscriber {
 
         let generationStart = ContinuousClock.now
         let parameters = generationParameters(for: loadedModel, option: option)
-        let chunkSamples = Self.chunkSampleCount(for: parameters)
-        let totalChunks = Int(ceil(Double(totalSamples) / Double(chunkSamples)))
         ProbeLog.write(
-            "generation begin repo=\(option.repoID) chunkSeconds=\(parameters.chunkDuration) chunks=\(totalChunks)"
+            "generation begin repo=\(option.repoID) chunkSeconds=\(parameters.chunkDuration) samples=\(totalSamples)"
         )
-        var transcriptParts: [String] = []
+        var streamedText = ""
+        var finalOutput: STTOutput?
         var modelReportedSeconds = 0.0
+        var tokenEventsSinceUpdate = 0
 
-        for chunkIndex in 0..<totalChunks {
+        for try await event in loadedModel.generateStream(
+            audio: audio,
+            generationParameters: parameters
+        ) {
             try Task.checkCancellation()
 
-            let startSample = chunkIndex * chunkSamples
-            let endSample = min(startSample + chunkSamples, totalSamples)
-            let chunkAudio = audio[startSample..<endSample]
-            let chunkDurationSeconds = Double(endSample - startSample) / Double(Self.sampleRate)
-            ProbeLog.write(
-                "generation chunk begin repo=\(option.repoID) index=\(chunkIndex + 1)/\(totalChunks) durationSeconds=\(chunkDurationSeconds)"
-            )
+            switch event {
+            case .token(let token):
+                streamedText += token
+                tokenEventsSinceUpdate += 1
 
-            let output = loadedModel.generate(
-                audio: chunkAudio,
-                generationParameters: parameters
-            )
-            modelReportedSeconds += output.totalTime
-            metrics.generationSeconds = Self.seconds(since: generationStart)
-            metrics.modelReportedSeconds = modelReportedSeconds
-            metrics.totalSeconds = Self.seconds(since: totalStart)
-            await onMetricsUpdate?(metrics)
+                guard tokenEventsSinceUpdate >= 8 else { continue }
 
-            try Task.checkCancellation()
-            let chunkText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !chunkText.isEmpty {
-                transcriptParts.append(chunkText)
+                tokenEventsSinceUpdate = 0
+                metrics.generationSeconds = Self.seconds(since: generationStart)
+                metrics.modelReportedSeconds = modelReportedSeconds
+                metrics.totalSeconds = Self.seconds(since: totalStart)
+                await onMetricsUpdate?(metrics)
+                await onPartialTranscript?(streamedText.trimmingCharacters(in: .whitespacesAndNewlines))
+
+            case .info(let info):
+                modelReportedSeconds = max(modelReportedSeconds, info.generateTime)
+                metrics.generationSeconds = Self.seconds(since: generationStart)
+                metrics.modelReportedSeconds = modelReportedSeconds
+                metrics.totalSeconds = Self.seconds(since: totalStart)
+                await onMetricsUpdate?(metrics)
+
+            case .result(let output):
+                finalOutput = output
+                modelReportedSeconds = max(modelReportedSeconds, output.totalTime)
+                metrics.generationSeconds = Self.seconds(since: generationStart)
+                metrics.modelReportedSeconds = modelReportedSeconds
+                metrics.totalSeconds = Self.seconds(since: totalStart)
+                await onMetricsUpdate?(metrics)
+
+                let outputText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !outputText.isEmpty {
+                    await onPartialTranscript?(outputText)
+                }
             }
-
-            let partialTranscript = transcriptParts.joined(separator: " ")
-            await onPartialTranscript?(partialTranscript)
-            ProbeLog.write(
-                "generation chunk complete repo=\(option.repoID) index=\(chunkIndex + 1)/\(totalChunks) textLength=\(output.text.count)"
-            )
         }
 
-        let transcript = transcriptParts.joined(separator: " ")
+        let transcript = (finalOutput?.text ?? streamedText).trimmingCharacters(in: .whitespacesAndNewlines)
         let generationSeconds = Self.seconds(since: generationStart)
         ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(transcript.count)")
 
@@ -1318,13 +1326,6 @@ actor AudioModelTranscriber {
         let duration = start.duration(to: ContinuousClock.now)
         return Double(duration.components.seconds) +
             Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
-    }
-
-    private static func chunkSampleCount(for parameters: STTGenerateParameters) -> Int {
-        let chunkDuration = parameters.chunkDuration > 0
-            ? Double(parameters.chunkDuration)
-            : Double(safeDecodeChunkDurationSeconds)
-        return max(1, Int(chunkDuration * Double(sampleRate)))
     }
 
     private static func makeError(_ message: String) -> NSError {
