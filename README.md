@@ -73,6 +73,18 @@ the current audio sample.
 Use the small trash button next to the model picker to delete the selected
 downloaded model from the local Hugging Face cache.
 
+## Performance notes
+
+The app reports model load separately from generation. In local tests, model
+load was usually under 2 seconds; long waits came from generation over long
+media files.
+
+Imported media is normalized to 16 kHz mono WAV, then decoded in bounded
+30-second model chunks. This keeps peak memory lower than the upstream default
+20-minute decode window and is safer for long recordings. Very long files can
+still take minutes because the current app loads the normalized audio sample
+before running the model.
+
 ## Local files
 
 | Data | Location | GitHub note |

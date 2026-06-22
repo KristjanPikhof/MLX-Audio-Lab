@@ -236,6 +236,8 @@ struct ModelPreparationResult: Sendable {
 }
 
 actor AudioModelTranscriber {
+    private static let safeDecodeChunkDurationSeconds: Float = 30
+
     private var loadedModels: [String: any STTGenerationModel] = [:]
 
     func prepareModel(_ option: AudioModelOption) async throws -> ModelPreparationResult {
@@ -274,10 +276,11 @@ actor AudioModelTranscriber {
         let modelLoadSeconds = Self.seconds(since: modelLoadStart)
 
         let generationStart = ContinuousClock.now
-        ProbeLog.write("generation begin repo=\(option.repoID)")
+        let parameters = generationParameters(for: loadedModel, option: option)
+        ProbeLog.write("generation begin repo=\(option.repoID) chunkSeconds=\(parameters.chunkDuration)")
         let output = loadedModel.generate(
             audio: audio,
-            generationParameters: generationParameters(for: loadedModel, option: option)
+            generationParameters: parameters
         )
         let generationSeconds = Self.seconds(since: generationStart)
         ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(output.text.count)")
@@ -322,6 +325,9 @@ actor AudioModelTranscriber {
         option: AudioModelOption
     ) -> STTGenerateParameters {
         let defaults = model.defaultGenerationParameters
+        let chunkDuration = defaults.chunkDuration <= 0
+            ? defaults.chunkDuration
+            : min(defaults.chunkDuration, Self.safeDecodeChunkDurationSeconds)
         return STTGenerateParameters(
             maxTokens: defaults.maxTokens,
             temperature: defaults.temperature,
@@ -329,7 +335,7 @@ actor AudioModelTranscriber {
             topK: defaults.topK,
             verbose: false,
             language: option.languageHint,
-            chunkDuration: defaults.chunkDuration,
+            chunkDuration: chunkDuration,
             minChunkDuration: defaults.minChunkDuration,
             repetitionPenalty: defaults.repetitionPenalty,
             repetitionContextSize: defaults.repetitionContextSize
