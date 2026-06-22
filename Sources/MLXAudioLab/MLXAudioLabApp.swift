@@ -775,7 +775,9 @@ actor AudioModelTranscriber {
     private static let safeDecodeChunkDurationSeconds: Float = 30
 
     private var loadedModels: [String: any STTGenerationModel] = [:]
-    private var loadingModelTasks: [String: Task<any STTGenerationModel, Error>] = [:]
+    private var loadingModelIDs: Set<String> = []
+    private var modelLoadErrors: [String: Error] = [:]
+    private var modelLoadWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
     func prepareModel(
         _ option: AudioModelOption,
@@ -921,27 +923,51 @@ actor AudioModelTranscriber {
             return model
         }
 
-        if let task = loadingModelTasks[option.id] {
-            let model = try await task.value
-            ProbeLog.write("model joined in-flight load repo=\(option.repoID)")
-            return model
+        if loadingModelIDs.contains(option.id) {
+            await waitForModelLoad(id: option.id)
+            try Task.checkCancellation()
+
+            if let model = loadedModels[option.id] {
+                ProbeLog.write("model joined in-flight load repo=\(option.repoID)")
+                return model
+            }
+
+            if let error = modelLoadErrors[option.id] {
+                throw error
+            }
+
+            throw Self.makeError("The in-flight model load finished without a loaded model.")
         }
 
         ProbeLog.write("model load begin repo=\(option.repoID)")
-        let task = Task {
-            try await Self.loadModel(for: option)
+        loadingModelIDs.insert(option.id)
+        modelLoadErrors[option.id] = nil
+        defer {
+            loadingModelIDs.remove(option.id)
+            resumeModelLoadWaiters(id: option.id)
         }
-        loadingModelTasks[option.id] = task
 
         do {
-            let model = try await task.value
+            let model = try await Self.loadModel(for: option)
             loadedModels[option.id] = model
-            loadingModelTasks[option.id] = nil
             ProbeLog.write("model load complete repo=\(option.repoID)")
             return model
         } catch {
-            loadingModelTasks[option.id] = nil
+            modelLoadErrors[option.id] = error
             throw error
+        }
+    }
+
+    private func waitForModelLoad(id: String) async {
+        await withCheckedContinuation { continuation in
+            modelLoadWaiters[id, default: []].append(continuation)
+        }
+    }
+
+    private func resumeModelLoadWaiters(id: String) {
+        let waiters = modelLoadWaiters.removeValue(forKey: id) ?? []
+        for waiter in waiters {
+            waiter.resume()
         }
     }
 
@@ -2127,7 +2153,7 @@ final class ProbeViewModel {
         writer.startSession(atSourceTime: .zero)
 
         let processingQueue = DispatchQueue(label: "MLXAudioLab.wav-conversion", qos: .userInitiated)
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             var didResume = false
 
             func complete(_ result: Result<Void, Error>) {
