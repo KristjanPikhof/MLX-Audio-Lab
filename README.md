@@ -5,7 +5,7 @@
 [![SwiftPM](https://img.shields.io/badge/build-SwiftPM-6E6E73)](Package.swift)
 [![Apple Silicon recommended](https://img.shields.io/badge/Apple%20Silicon-recommended-111111?logo=apple&logoColor=white)](#requirements)
 [![MLX local ASR](https://img.shields.io/badge/MLX-local%20ASR-00A67E)](#supported-models)
-[![Models: 9 ASR families](https://img.shields.io/badge/models-9%20ASR%20families-7C3AED)](#supported-models)
+[![Models: 11 options](https://img.shields.io/badge/models-11%20options-7C3AED)](#supported-models)
 [![Media import](https://img.shields.io/badge/import-audio%20%2B%20video-2563EB)](#quick-start)
 [![TXT/MD export](https://img.shields.io/badge/export-TXT%20%2F%20MD-059669)](#quick-start)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -60,8 +60,8 @@ need fresh-download verification with `mlx-audio-swift`.
 
 | Requirement | Notes |
 |---|---|
-| macOS | Apple Silicon recommended; the package targets macOS 14+. |
-| Xcode | Required because MLX builds and bundles Metal shader resources. |
+| macOS | macOS 14+; Apple Silicon is required for the default `./run.sh` destination. |
+| Xcode | Xcode with Swift 6.2 support is required because MLX builds and bundles Metal shader resources. |
 | Metal toolchain | If Xcode reports it missing, run `xcodebuild -downloadComponent MetalToolchain`. |
 | Network | Needed on first run to download the model from Hugging Face. |
 
@@ -74,21 +74,9 @@ cache under the `mlx-audio` folder:
 ~/.cache/huggingface/hub/mlx-audio/
 ```
 
-The current model folders are:
-
-```text
-~/.cache/huggingface/hub/mlx-audio/mlx-community_nemotron-3.5-asr-streaming-0.6b
-~/.cache/huggingface/hub/mlx-audio/mlx-community_nemotron-3.5-asr-streaming-0.6b-8bit
-~/.cache/huggingface/hub/mlx-audio/mlx-community_parakeet-tdt-0.6b-v3
-~/.cache/huggingface/hub/mlx-audio/mlx-community_Qwen3-ASR-0.6B-4bit
-~/.cache/huggingface/hub/mlx-audio/mlx-community_Qwen3-ASR-1.7B-4bit
-~/.cache/huggingface/hub/mlx-audio/mlx-community_whisper-large-v3-turbo-asr-fp16
-~/.cache/huggingface/hub/mlx-audio/mlx-community_SenseVoiceSmall
-~/.cache/huggingface/hub/mlx-audio/mlx-community_GLM-ASR-Nano-2512-4bit
-~/.cache/huggingface/hub/mlx-audio/mlx-community_granite-4.0-1b-speech-5bit
-~/.cache/huggingface/hub/mlx-audio/mlx-community_Voxtral-Mini-4B-Realtime-2602-4bit
-~/.cache/huggingface/hub/mlx-audio/beshkenadze_cohere-transcribe-03-2026-mlx-fp16
-```
+Each app-managed model folder is named from its Hugging Face repo ID by
+replacing `/` with `_`, for example
+`mlx-community_nemotron-3.5-asr-streaming-0.6b`.
 
 If `HF_HUB_CACHE` or `HF_HOME` is set, the Hugging Face cache root follows those
 environment variables.
@@ -108,6 +96,8 @@ cd MLXAudioLab
 
 Running `xcodebuild ... build` by itself only compiles the package. Use
 `./run.sh` to build, package, sign, and open the macOS app bundle.
+The script defaults to `platform=macOS,arch=arm64`; override
+`MLX_AUDIO_LAB_DESTINATION` if you need a different local Xcode destination.
 
 The app window has a minimum size of 1120 x 775.
 
@@ -151,12 +141,11 @@ time, and total time separately. These metrics update as audio load, model load,
 and each decode chunk completes. In local tests, model load was usually under 2
 seconds; long waits came from generation over long media files.
 
-Imported media is normalized to 16 kHz mono WAV, then decoded in bounded
-30-second model chunks. This keeps peak memory lower than the upstream default
-20-minute decode window and is safer for long recordings. Very long files can
-still take minutes because the current app loads the normalized audio sample
-before running the model. The **Cancel** button stops after the current decode
-chunk finishes, so it may take a few seconds to settle on slower runs.
+Imported media is normalized to 16 kHz mono WAV, then transcribed with the
+model streaming API using a 30-second chunk duration. Very long files can still
+take minutes because the current app loads the normalized audio sample before
+running the model. The **Cancel** button stops after the current generation step
+finishes, so it may take a few seconds to settle on slower runs.
 
 ## Local files
 
@@ -185,5 +174,6 @@ If the window closes unexpectedly, check the cache logs:
 
 ```bash
 cat "$HOME/Library/Caches/MLXAudioLab/mlx-audio-lab.log"
+cat "$HOME/Library/Caches/MLXAudioLab/mlx-audio-lab.stdout.log"
 cat "$HOME/Library/Caches/MLXAudioLab/mlx-audio-lab.stderr.log"
 ```
