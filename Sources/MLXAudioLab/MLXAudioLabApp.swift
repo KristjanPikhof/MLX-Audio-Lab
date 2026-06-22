@@ -469,20 +469,49 @@ struct ModelDownloadProgress: Equatable, Sendable {
     }
 
     var byteProgressText: String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useMB, .useGB]
-        formatter.countStyle = .file
-
-        let completed = formatter.string(fromByteCount: displayedCompletedBytes)
+        let unit = ByteDisplayUnit.unit(for: max(totalBytes, displayedCompletedBytes))
+        let completed = unit.string(fromByteCount: displayedCompletedBytes)
         guard totalBytes > 0 else { return completed }
 
-        let total = formatter.string(fromByteCount: totalBytes)
+        let total = unit.string(fromByteCount: totalBytes)
         return "\(completed) of \(total)"
     }
 
     private var displayedCompletedBytes: Int64 {
         guard totalBytes > 0 else { return completedBytes }
         return min(completedBytes, totalBytes)
+    }
+
+    private enum ByteDisplayUnit {
+        case megabytes
+        case gigabytes
+
+        static func unit(for bytes: Int64) -> ByteDisplayUnit {
+            bytes >= 1_073_741_824 ? .gigabytes : .megabytes
+        }
+
+        func string(fromByteCount bytes: Int64) -> String {
+            let value = Double(max(bytes, 0)) / Double(bytesPerUnit)
+            return "\(String(format: "%.1f", value)) \(suffix)"
+        }
+
+        private var bytesPerUnit: Int64 {
+            switch self {
+            case .megabytes:
+                return 1_048_576
+            case .gigabytes:
+                return 1_073_741_824
+            }
+        }
+
+        private var suffix: String {
+            switch self {
+            case .megabytes:
+                return "MB"
+            case .gigabytes:
+                return "GB"
+            }
+        }
     }
 }
 
@@ -2223,7 +2252,7 @@ struct ContentView: View {
                 .zIndex(2)
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: model.modelDownloadProgress)
+        .animation(.easeInOut(duration: 0.18), value: model.modelDownloadProgress != nil)
         .frame(minWidth: 1120, minHeight: 775)
         .onAppear {
             model.refreshModelAvailability(updateStatus: true)
@@ -2271,6 +2300,10 @@ struct ContentView: View {
 struct DownloadProgressBanner: View {
     let progress: ModelDownloadProgress
 
+    private enum Layout {
+        static let progressTextWidth: CGFloat = 220
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 10) {
@@ -2284,6 +2317,8 @@ struct DownloadProgressBanner: View {
                 Text("\(progress.percentageText)  \(progress.byteProgressText)")
                     .font(.caption.monospacedDigit().weight(.medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: Layout.progressTextWidth, alignment: .trailing)
             }
 
             ProgressView(value: progress.fractionCompleted)
