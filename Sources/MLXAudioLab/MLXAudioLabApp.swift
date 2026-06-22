@@ -6,7 +6,120 @@ import MLXAudioSTT
 import Observation
 import SwiftUI
 
-private let nemotronRepo = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+enum AudioModelFamily: String, Sendable {
+    case nemotron
+    case parakeet
+}
+
+struct AudioModelOption: Identifiable, Hashable, Sendable {
+    let id: String
+    let displayName: String
+    let repoID: String
+    let family: AudioModelFamily
+    let downloadSizeDescription: String
+    let subtitle: String
+    let languageHint: String?
+
+    static let supported: [AudioModelOption] = [
+        AudioModelOption(
+            id: "nemotron-streaming-0.6b-8bit",
+            displayName: "Nemotron 3.5 ASR Streaming 0.6B",
+            repoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
+            family: .nemotron,
+            downloadSizeDescription: "~721 MB",
+            subtitle: "8-bit MLX conversion; smaller download and good for quick local checks.",
+            languageHint: "auto"
+        ),
+        AudioModelOption(
+            id: "parakeet-tdt-0.6b-v3",
+            displayName: "Parakeet TDT 0.6B v3",
+            repoID: "mlx-community/parakeet-tdt-0.6b-v3",
+            family: .parakeet,
+            downloadSizeDescription: "~2.51 GB",
+            subtitle: "MLX conversion of NVIDIA Parakeet v3; multilingual ASR comparison target.",
+            languageHint: nil
+        )
+    ]
+}
+
+enum ModelLocalAvailability: Sendable {
+    case available
+    case notDownloaded
+    case incomplete
+}
+
+enum ModelCache {
+    static func rootDirectory() -> URL {
+        let env = ProcessInfo.processInfo.environment
+        let hubRoot: URL
+
+        if let hubCache = env["HF_HUB_CACHE"], !hubCache.isEmpty {
+            hubRoot = URL(fileURLWithPath: expandTilde(hubCache), isDirectory: true)
+        } else if let hfHome = env["HF_HOME"], !hfHome.isEmpty {
+            hubRoot = URL(fileURLWithPath: expandTilde(hfHome), isDirectory: true)
+                .appending(path: "hub", directoryHint: .isDirectory)
+        } else {
+            hubRoot = FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: ".cache/huggingface/hub", directoryHint: .isDirectory)
+        }
+
+        return hubRoot.appending(path: "mlx-audio", directoryHint: .isDirectory)
+    }
+
+    static func directory(for option: AudioModelOption) -> URL {
+        rootDirectory().appending(
+            path: option.repoID.replacingOccurrences(of: "/", with: "_"),
+            directoryHint: .isDirectory
+        )
+    }
+
+    static func availability(for option: AudioModelOption) -> ModelLocalAvailability {
+        let directory = directory(for: option)
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return .notDownloaded
+        }
+
+        let configURL = directory.appending(path: "config.json")
+        guard fileManager.fileExists(atPath: configURL.path),
+              let configData = try? Data(contentsOf: configURL),
+              (try? JSONSerialization.jsonObject(with: configData)) != nil,
+              containsNonEmptyFile(withExtension: "safetensors", in: directory)
+        else {
+            return .incomplete
+        }
+
+        return .available
+    }
+
+    private static func containsNonEmptyFile(withExtension fileExtension: String, in directory: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return false
+        }
+
+        for case let fileURL as URL in enumerator
+        where fileURL.pathExtension.lowercased() == fileExtension {
+            let fileSize = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            if fileSize > 0 {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func expandTilde(_ path: String) -> String {
+        NSString(string: path).expandingTildeInPath
+    }
+}
 
 enum ProbeLog {
     static func configureProcessOutput() {
@@ -70,11 +183,32 @@ struct TranscriptionResult: Sendable {
     let metrics: TranscriptionMetrics
 }
 
-actor NemotronTranscriber {
-    private var model: NemotronASRModel?
+struct ModelPreparationResult: Sendable {
+    let modelLoadSeconds: Double
+    let wasModelAlreadyLoaded: Bool
+}
 
-    func transcribe(recordingURL: URL, recordingSeconds: Double) async throws -> TranscriptionResult {
-        ProbeLog.write("transcribe begin recording=\(recordingURL.lastPathComponent) recordingSeconds=\(recordingSeconds)")
+actor AudioModelTranscriber {
+    private var loadedModels: [String: any STTGenerationModel] = [:]
+
+    func prepareModel(_ option: AudioModelOption) async throws -> ModelPreparationResult {
+        ProbeLog.write("model prepare requested repo=\(option.repoID)")
+        let start = ContinuousClock.now
+        let wasLoaded = loadedModels[option.id] != nil
+        _ = try await loadedModel(for: option)
+        let seconds = Self.seconds(since: start)
+        ProbeLog.write("model prepare complete repo=\(option.repoID) seconds=\(seconds) wasLoaded=\(wasLoaded)")
+        return ModelPreparationResult(modelLoadSeconds: seconds, wasModelAlreadyLoaded: wasLoaded)
+    }
+
+    func transcribe(
+        recordingURL: URL,
+        recordingSeconds: Double,
+        using option: AudioModelOption
+    ) async throws -> TranscriptionResult {
+        ProbeLog.write(
+            "transcribe begin repo=\(option.repoID) recording=\(recordingURL.lastPathComponent) recordingSeconds=\(recordingSeconds)"
+        )
         let totalStart = ContinuousClock.now
 
         let audioLoadStart = ContinuousClock.now
@@ -83,26 +217,16 @@ actor NemotronTranscriber {
         let audioLoadSeconds = Self.seconds(since: audioLoadStart)
         ProbeLog.write("audio load complete seconds=\(audioLoadSeconds)")
 
-        let wasLoaded = model != nil
         let modelLoadStart = ContinuousClock.now
-        let loadedModel: NemotronASRModel
-        if let model {
-            ProbeLog.write("model already loaded")
-            loadedModel = model
-        } else {
-            ProbeLog.write("model load begin repo=\(nemotronRepo)")
-            let newModel = try await NemotronASRModel.fromPretrained(nemotronRepo)
-            model = newModel
-            loadedModel = newModel
-            ProbeLog.write("model load complete")
-        }
+        let wasLoaded = loadedModels[option.id] != nil
+        let loadedModel = try await loadedModel(for: option)
         let modelLoadSeconds = Self.seconds(since: modelLoadStart)
 
         let generationStart = ContinuousClock.now
-        ProbeLog.write("generation begin")
+        ProbeLog.write("generation begin repo=\(option.repoID)")
         let output = loadedModel.generate(
             audio: audio,
-            generationParameters: .init(language: "auto")
+            generationParameters: generationParameters(for: loadedModel, option: option)
         )
         let generationSeconds = Self.seconds(since: generationStart)
         ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(output.text.count)")
@@ -122,6 +246,45 @@ actor NemotronTranscriber {
         return result
     }
 
+    private func loadedModel(for option: AudioModelOption) async throws -> any STTGenerationModel {
+        if let model = loadedModels[option.id] {
+            ProbeLog.write("model already loaded repo=\(option.repoID)")
+            return model
+        }
+
+        ProbeLog.write("model load begin repo=\(option.repoID)")
+        let model: any STTGenerationModel
+        switch option.family {
+        case .nemotron:
+            model = try await NemotronASRModel.fromPretrained(option.repoID)
+        case .parakeet:
+            model = try await ParakeetModel.fromPretrained(option.repoID)
+        }
+
+        loadedModels[option.id] = model
+        ProbeLog.write("model load complete repo=\(option.repoID)")
+        return model
+    }
+
+    private func generationParameters(
+        for model: any STTGenerationModel,
+        option: AudioModelOption
+    ) -> STTGenerateParameters {
+        let defaults = model.defaultGenerationParameters
+        return STTGenerateParameters(
+            maxTokens: defaults.maxTokens,
+            temperature: defaults.temperature,
+            topP: defaults.topP,
+            topK: defaults.topK,
+            verbose: false,
+            language: option.languageHint,
+            chunkDuration: defaults.chunkDuration,
+            minChunkDuration: defaults.minChunkDuration,
+            repetitionPenalty: defaults.repetitionPenalty,
+            repetitionContextSize: defaults.repetitionContextSize
+        )
+    }
+
     private static func seconds(since start: ContinuousClock.Instant) -> Double {
         let duration = start.duration(to: ContinuousClock.now)
         return Double(duration.components.seconds) +
@@ -134,6 +297,15 @@ actor NemotronTranscriber {
 final class ProbeViewModel {
     var isRecording = false
     var isTranscribing = false
+    var isPreparingModel = false
+    var selectedModelID = AudioModelOption.supported[0].id {
+        didSet {
+            guard oldValue != selectedModelID else { return }
+            refreshModelAvailability(updateStatus: true)
+        }
+    }
+    var modelAvailability: [String: ModelLocalAvailability] = [:]
+    var loadedModelIDs: Set<String> = []
     var status = "Ready"
     var transcript = ""
     var errorMessage: String?
@@ -141,12 +313,17 @@ final class ProbeViewModel {
     var recordingElapsedSeconds: Double = 0
     var logDirectoryPath = ProbeLog.logDirectory().path
 
-    private let transcriber = NemotronTranscriber()
+    private let transcriber = AudioModelTranscriber()
     private var recorder: AVAudioRecorder?
     private var recordingStartedAt: Date?
     private var recordingURL: URL?
     private var timerTask: Task<Void, Never>?
     private var transcriptionTask: Task<Void, Never>?
+    private var modelPreparationTask: Task<Void, Never>?
+
+    init() {
+        refreshModelAvailability(updateStatus: true)
+    }
 
     var primaryButtonTitle: String {
         if isRecording { return "Stop" }
@@ -155,7 +332,94 @@ final class ProbeViewModel {
     }
 
     var canPressPrimaryButton: Bool {
-        !isTranscribing
+        if isRecording {
+            return !isPreparingModel && !isTranscribing
+        }
+        return !isTranscribing && !isPreparingModel && selectedModelCanRecord
+    }
+
+    var modelControlsDisabled: Bool {
+        isRecording || isTranscribing || isPreparingModel
+    }
+
+    var selectedModel: AudioModelOption {
+        AudioModelOption.supported.first { $0.id == selectedModelID } ?? AudioModelOption.supported[0]
+    }
+
+    var selectedModelAvailability: ModelLocalAvailability {
+        modelAvailability[selectedModel.id] ?? ModelCache.availability(for: selectedModel)
+    }
+
+    var selectedModelIsLoaded: Bool {
+        loadedModelIDs.contains(selectedModel.id)
+    }
+
+    var selectedModelStatusText: String {
+        if selectedModelIsLoaded {
+            return "Loaded for this session"
+        }
+
+        switch selectedModelAvailability {
+        case .available:
+            return "Available on this Mac"
+        case .notDownloaded:
+            return "Not downloaded"
+        case .incomplete:
+            return "Cache incomplete"
+        }
+    }
+
+    var selectedModelStatusIcon: String {
+        if selectedModelIsLoaded { return "bolt.fill" }
+
+        switch selectedModelAvailability {
+        case .available:
+            return "checkmark.circle.fill"
+        case .notDownloaded:
+            return "arrow.down.circle"
+        case .incomplete:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var selectedModelActionTitle: String {
+        if isPreparingModel { return "Preparing..." }
+        if selectedModelIsLoaded { return "Selected" }
+
+        switch selectedModelAvailability {
+        case .available:
+            return "Select"
+        case .notDownloaded:
+            return "Download & Select"
+        case .incomplete:
+            return "Repair & Select"
+        }
+    }
+
+    var selectedModelActionIcon: String {
+        if isPreparingModel { return "hourglass" }
+        if selectedModelIsLoaded { return "checkmark" }
+
+        switch selectedModelAvailability {
+        case .available:
+            return "checkmark.circle"
+        case .notDownloaded:
+            return "arrow.down.circle"
+        case .incomplete:
+            return "arrow.clockwise.circle"
+        }
+    }
+
+    var canPrepareSelectedModel: Bool {
+        !modelControlsDisabled && !selectedModelIsLoaded
+    }
+
+    var selectedModelCanRecord: Bool {
+        selectedModelIsLoaded || selectedModelAvailability == .available
+    }
+
+    var modelCacheRootPath: String {
+        ModelCache.rootDirectory().path
     }
 
     func primaryButtonPressed() {
@@ -166,7 +430,55 @@ final class ProbeViewModel {
         }
     }
 
+    func refreshModelAvailability(updateStatus: Bool = false) {
+        modelAvailability = Dictionary(
+            uniqueKeysWithValues: AudioModelOption.supported.map { option in
+                (option.id, ModelCache.availability(for: option))
+            }
+        )
+
+        if updateStatus, !isRecording, !isTranscribing, !isPreparingModel {
+            status = idleStatusForSelectedModel()
+        }
+    }
+
+    func prepareSelectedModel() {
+        guard canPrepareSelectedModel else { return }
+
+        let option = selectedModel
+        errorMessage = nil
+        status = selectedModelAvailability == .available
+            ? "Loading \(option.displayName)..."
+            : "Downloading \(option.displayName)..."
+        isPreparingModel = true
+        ProbeLog.write("model action requested repo=\(option.repoID)")
+
+        modelPreparationTask?.cancel()
+        modelPreparationTask = Task {
+            do {
+                let result = try await transcriber.prepareModel(option)
+                loadedModelIDs.insert(option.id)
+                metrics.modelLoadSeconds = result.modelLoadSeconds
+                metrics.wasModelAlreadyLoaded = result.wasModelAlreadyLoaded
+                refreshModelAvailability()
+                status = "\(option.displayName) selected"
+            } catch {
+                status = "Model preparation failed"
+                errorMessage = Self.describe(error)
+                ProbeLog.write("model preparation failed repo=\(option.repoID)", error: error)
+            }
+            isPreparingModel = false
+        }
+    }
+
     func startRecording() {
+        guard selectedModelCanRecord else {
+            status = "Download the selected model before recording"
+            errorMessage = "\(selectedModel.displayName) is not available on this Mac yet."
+            return
+        }
+
+        let option = selectedModel
         ProbeLog.write("record requested")
         errorMessage = nil
         transcript = ""
@@ -202,9 +514,9 @@ final class ProbeViewModel {
                 self.recordingURL = url
                 self.recordingStartedAt = Date()
                 self.isRecording = true
-                self.status = "Recording..."
+                self.status = "Recording with \(option.displayName)..."
                 self.startTimer()
-                ProbeLog.write("record started recording=\(url.lastPathComponent)")
+                ProbeLog.write("record started repo=\(option.repoID) recording=\(url.lastPathComponent)")
             } catch {
                 self.status = "Recording failed"
                 self.errorMessage = Self.describe(error)
@@ -232,7 +544,8 @@ final class ProbeViewModel {
             return
         }
 
-        status = "Loading model and transcribing..."
+        let option = selectedModel
+        status = "Transcribing with \(option.displayName)..."
         isTranscribing = true
         errorMessage = nil
         self.recordingURL = nil
@@ -247,8 +560,11 @@ final class ProbeViewModel {
             do {
                 let result = try await transcriber.transcribe(
                     recordingURL: recordingURL,
-                    recordingSeconds: elapsed
+                    recordingSeconds: elapsed,
+                    using: option
                 )
+                self.loadedModelIDs.insert(option.id)
+                self.refreshModelAvailability()
                 self.transcript = result.text
                 self.metrics = result.metrics
                 self.status = result.text.isEmpty ? "Finished with empty output" : "Finished"
@@ -265,9 +581,24 @@ final class ProbeViewModel {
     func clearOutput() {
         transcript = ""
         errorMessage = nil
-        status = "Ready"
+        status = idleStatusForSelectedModel()
         metrics = TranscriptionMetrics()
         recordingElapsedSeconds = 0
+    }
+
+    private func idleStatusForSelectedModel() -> String {
+        if selectedModelIsLoaded {
+            return "Ready"
+        }
+
+        switch selectedModelAvailability {
+        case .available:
+            return "Ready"
+        case .notDownloaded:
+            return "Download the selected model before recording"
+        case .incomplete:
+            return "Repair the selected model cache before recording"
+        }
     }
 
     private func startTimer() {
@@ -347,13 +678,17 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
+            modelPicker
             controls
             metricsView
             transcriptView
             footer
         }
         .padding(24)
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(minWidth: 780, minHeight: 640)
+        .onAppear {
+            model.refreshModelAvailability(updateStatus: true)
+        }
     }
 
     private var header: some View {
@@ -361,11 +696,62 @@ struct ContentView: View {
             Text("MLX Audio Lab")
                 .font(.largeTitle)
                 .fontWeight(.semibold)
-            Text(nemotronRepo)
+            Text("Test local MLX audio models on macOS and compare transcription speed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
         }
+    }
+
+    private var modelPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Picker("Model", selection: $model.selectedModelID) {
+                    ForEach(AudioModelOption.supported) { option in
+                        Text(option.displayName).tag(option.id)
+                    }
+                }
+                .frame(maxWidth: 430)
+                .disabled(model.modelControlsDisabled)
+
+                Button {
+                    model.prepareSelectedModel()
+                } label: {
+                    Label(model.selectedModelActionTitle, systemImage: model.selectedModelActionIcon)
+                        .frame(minWidth: 150)
+                }
+                .disabled(!model.canPrepareSelectedModel)
+
+                Button {
+                    model.refreshModelAvailability(updateStatus: true)
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(model.modelControlsDisabled)
+
+                Spacer()
+            }
+
+            HStack(spacing: 12) {
+                Label(model.selectedModelStatusText, systemImage: model.selectedModelStatusIcon)
+                    .foregroundStyle(model.selectedModelAvailability == .incomplete ? .orange : .secondary)
+                Text(model.selectedModel.downloadSizeDescription)
+                    .foregroundStyle(.secondary)
+                Text(model.selectedModel.repoID)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            .font(.callout)
+
+            Text(model.selectedModel.subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(.quaternary.opacity(0.55), in: .rect(cornerRadius: 8))
     }
 
     private var controls: some View {
@@ -388,7 +774,7 @@ struct ContentView: View {
                 Label("Clear", systemImage: "trash")
             }
             .controlSize(.large)
-            .disabled(model.isRecording || model.isTranscribing)
+            .disabled(model.isRecording || model.isTranscribing || model.isPreparingModel)
 
             Spacer()
 
@@ -453,6 +839,12 @@ struct ContentView: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
             }
+            Text("Models: \(model.modelCacheRootPath)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
     }
 
