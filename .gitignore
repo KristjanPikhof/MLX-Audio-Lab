@@ -1,0 +1,22 @@
+.DS_Store
+
+# SwiftPM and Xcode build products
+.build/
+.swiftpm/
+.derivedData/
+.generated/
+.run/
+DerivedData/
+*.xcresult/
+*.dSYM/
+*.app/
+
+# Local runtime output
+*.log
+nemotron-probe*.log
+**/nemotron-probe*.log
+*.wav
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
