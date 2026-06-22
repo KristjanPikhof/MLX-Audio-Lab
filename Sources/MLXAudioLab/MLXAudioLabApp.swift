@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import Darwin
 import Foundation
@@ -235,6 +236,13 @@ struct ModelPreparationResult: Sendable {
     let wasModelAlreadyLoaded: Bool
 }
 
+struct TranscriptStatistics: Sendable {
+    let words: Int
+    let letters: Int
+    let characters: Int
+    let lines: Int
+}
+
 actor AudioModelTranscriber {
     private static let sampleRate = 16_000
     private static let safeDecodeChunkDurationSeconds: Float = 30
@@ -430,6 +438,7 @@ final class ProbeViewModel {
     var status = "Ready"
     var transcript = ""
     var errorMessage: String?
+    var transcriptExportMessage: String?
     var metrics = TranscriptionMetrics()
     var recordingElapsedSeconds: Double = 0
     var logDirectoryPath = ProbeLog.logDirectory().path
@@ -593,6 +602,30 @@ final class ProbeViewModel {
         ModelCache.rootDirectory().path
     }
 
+    var hasTranscriptOutput: Bool {
+        !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var transcriptStatistics: TranscriptStatistics {
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTranscript.isEmpty else {
+            return TranscriptStatistics(words: 0, letters: 0, characters: 0, lines: 0)
+        }
+
+        let words = trimmedTranscript.split { character in
+            !character.isLetter && !character.isNumber
+        }.count
+        let letters = trimmedTranscript.filter(\.isLetter).count
+        let lines = trimmedTranscript.components(separatedBy: .newlines).count
+
+        return TranscriptStatistics(
+            words: words,
+            letters: letters,
+            characters: trimmedTranscript.count,
+            lines: lines
+        )
+    }
+
     func primaryButtonPressed() {
         if isRecording {
             stopRecordingAndTranscribe()
@@ -636,6 +669,7 @@ final class ProbeViewModel {
                     let sample = try await Self.importAudioSample(from: sourceURL)
                     replaceCurrentSample(with: sample)
                     transcript = ""
+                    transcriptExportMessage = nil
                     metrics = TranscriptionMetrics()
                     recordingElapsedSeconds = 0
                     errorMessage = nil
@@ -759,6 +793,7 @@ final class ProbeViewModel {
         ProbeLog.write("record requested")
         errorMessage = nil
         transcript = ""
+        transcriptExportMessage = nil
         metrics = TranscriptionMetrics()
         recordingElapsedSeconds = 0
         status = "Requesting microphone access..."
@@ -840,6 +875,7 @@ final class ProbeViewModel {
         isCancellingTranscription = false
         errorMessage = nil
         transcript = ""
+        transcriptExportMessage = nil
         metrics = TranscriptionMetrics()
 
         transcriptionTask?.cancel()
@@ -880,9 +916,35 @@ final class ProbeViewModel {
         deleteCurrentSample()
         transcript = ""
         errorMessage = nil
+        transcriptExportMessage = nil
         status = idleStatusForSelectedModel()
         metrics = TranscriptionMetrics()
         recordingElapsedSeconds = 0
+    }
+
+    func copyTranscript() {
+        guard hasTranscriptOutput else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(transcript, forType: .string)
+        transcriptExportMessage = "Copied transcript"
+    }
+
+    func saveTranscriptAsText() {
+        saveTranscript(
+            content: transcript,
+            fileExtension: "txt",
+            contentType: .plainText
+        )
+    }
+
+    func saveTranscriptAsMarkdown() {
+        saveTranscript(
+            content: markdownTranscript(),
+            fileExtension: "md",
+            contentType: Self.markdownContentType
+        )
     }
 
     private func idleStatusForSelectedModel() -> String {
@@ -898,6 +960,61 @@ final class ProbeViewModel {
         case .incomplete:
             return "Repair the selected model cache before recording or running"
         }
+    }
+
+    private func saveTranscript(content: String, fileExtension: String, contentType: UTType) {
+        guard hasTranscriptOutput else { return }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [contentType]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = suggestedTranscriptFileName(fileExtension: fileExtension)
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            transcriptExportMessage = "Saved \(url.lastPathComponent)"
+        } catch {
+            transcriptExportMessage = "Save failed: \(Self.describe(error))"
+        }
+    }
+
+    private func markdownTranscript() -> String {
+        let sampleName = currentSample?.displayName ?? "No sample"
+        let audioLength = Self.formatSeconds(metrics.audioSeconds)
+
+        return """
+        # Transcript
+
+        - Model: \(selectedModel.displayName)
+        - Sample: \(sampleName)
+        - Audio length: \(audioLength)
+
+        ## Text
+
+        \(transcript)
+        """
+    }
+
+    private func suggestedTranscriptFileName(fileExtension: String) -> String {
+        let displayName = currentSample?.displayName ?? "transcript"
+        let stem = URL(fileURLWithPath: displayName).deletingPathExtension().lastPathComponent
+        let rawBaseName = stem.isEmpty ? "transcript" : stem
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let sanitized = rawBaseName.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? Character(scalar) : "-"
+        }
+        let baseName = String(sanitized).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+
+        return "\(baseName.isEmpty ? "transcript" : baseName)-transcript.\(fileExtension)"
+    }
+
+    private nonisolated static var markdownContentType: UTType {
+        UTType(filenameExtension: "md") ?? .plainText
     }
 
     private nonisolated static func importAudioSample(from sourceURL: URL) async throws -> AudioSample {
@@ -1615,6 +1732,12 @@ struct PerformancePanel: View {
                 MetricRow(title: "Total", value: formatSeconds(model.metrics.totalSeconds), showDivider: false)
             }
 
+            Divider()
+                .opacity(0.45)
+                .padding(.vertical, 2)
+
+            TranscriptDataSection(model: model)
+
             if let errorMessage = model.errorMessage {
                 ErrorNotice(message: errorMessage)
             }
@@ -1628,6 +1751,69 @@ struct PerformancePanel: View {
 
     private func formatSeconds(_ seconds: Double) -> String {
         ProbeViewModel.formatSeconds(seconds)
+    }
+}
+
+struct TranscriptDataSection: View {
+    let model: ProbeViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Transcript", symbol: "text.quote")
+
+            VStack(spacing: 0) {
+                MetricRow(title: "Words", value: formatCount(model.transcriptStatistics.words))
+                MetricRow(title: "Letters", value: formatCount(model.transcriptStatistics.letters))
+                MetricRow(title: "Characters", value: formatCount(model.transcriptStatistics.characters))
+                MetricRow(title: "Lines", value: formatCount(model.transcriptStatistics.lines), showDivider: false)
+            }
+
+            VStack(spacing: 8) {
+                Button {
+                    model.copyTranscript()
+                } label: {
+                    Label("Copy Text", systemImage: "doc.on.doc")
+                        .frame(maxWidth: .infinity)
+                }
+                .labButtonStyle()
+                .disabled(!model.hasTranscriptOutput)
+                .help("Copy transcript text to the clipboard")
+
+                HStack(spacing: 8) {
+                    Button {
+                        model.saveTranscriptAsText()
+                    } label: {
+                        Label("Save TXT", systemImage: "doc.text")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .labButtonStyle()
+                    .disabled(!model.hasTranscriptOutput)
+                    .help("Save transcript as a text file")
+
+                    Button {
+                        model.saveTranscriptAsMarkdown()
+                    } label: {
+                        Label("Save MD", systemImage: "doc.richtext")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .labButtonStyle()
+                    .disabled(!model.hasTranscriptOutput)
+                    .help("Save transcript as a Markdown file")
+                }
+            }
+
+            if let message = model.transcriptExportMessage {
+                let isFailure = message.localizedCaseInsensitiveContains("failed")
+                Label(message, systemImage: isFailure ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(isFailure ? .red : .secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private func formatCount(_ count: Int) -> String {
+        count.formatted(.number)
     }
 }
 

@@ -70,6 +70,9 @@ is already available on the computer or whether it still needs to be downloaded.
 After switching models, click **Run Selected Model** to regenerate output from
 the current audio sample.
 
+The performance panel also shows transcript word/letter counts and can copy the
+transcript or save it as `.txt` or `.md`.
+
 Use the small trash button next to the model picker to delete the selected
 downloaded model from the local Hugging Face cache.
 
