@@ -2594,6 +2594,7 @@ struct SampleControlPanel: View {
                 .labButtonStyle()
                 .disabled(
                     model.isRecording
+                        || model.isStartingRecording
                         || model.isTranscribing
                         || model.isPreparingModel
                         || model.isProcessingImport
@@ -2751,6 +2752,7 @@ struct TranscriptWorkspace: View {
 
     private var statusTitle: String {
         if model.isRecording { return "Recording" }
+        if model.isStartingRecording { return "Starting" }
         if model.isProcessingImport { return "Importing" }
         if model.isPreparingModel { return "Preparing model" }
         if model.isDeletingModel { return "Deleting model" }
@@ -2764,6 +2766,7 @@ struct TranscriptWorkspace: View {
 
     private var statusSymbol: String {
         if model.isRecording { return "record.circle.fill" }
+        if model.isStartingRecording { return "record.circle" }
         if model.status.localizedCaseInsensitiveContains("cancelled") { return "xmark.circle.fill" }
         if model.errorMessage != nil { return "exclamationmark.triangle.fill" }
         return "checkmark.circle.fill"
@@ -2771,6 +2774,7 @@ struct TranscriptWorkspace: View {
 
     private var statusTint: Color {
         if model.isRecording { return .red }
+        if model.isStartingRecording { return .orange }
         if statusShowsProgress { return .orange }
         if model.status.localizedCaseInsensitiveContains("cancelled") { return .orange }
         if model.errorMessage != nil { return .red }
@@ -2779,6 +2783,7 @@ struct TranscriptWorkspace: View {
 
     private var statusShowsProgress: Bool {
         model.isTranscribing
+            || model.isStartingRecording
             || model.isCancellingTranscription
             || model.isPreparingModel
             || model.isProcessingImport
@@ -2847,14 +2852,17 @@ struct TranscriptDataSection: View {
     let model: ProbeViewModel
 
     var body: some View {
+        let stats = model.transcriptStatistics
+        let hasOutput = model.hasTranscriptOutput
+
         VStack(alignment: .leading, spacing: 12) {
             SectionHeader(title: "Transcript", symbol: "text.quote")
 
             VStack(spacing: 0) {
-                MetricRow(title: "Words", value: formatCount(model.transcriptStatistics.words))
-                MetricRow(title: "Letters", value: formatCount(model.transcriptStatistics.letters))
-                MetricRow(title: "Characters", value: formatCount(model.transcriptStatistics.characters))
-                MetricRow(title: "Lines", value: formatCount(model.transcriptStatistics.lines), showDivider: false)
+                MetricRow(title: "Words", value: formatCount(stats.words))
+                MetricRow(title: "Letters", value: formatCount(stats.letters))
+                MetricRow(title: "Characters", value: formatCount(stats.characters))
+                MetricRow(title: "Lines", value: formatCount(stats.lines), showDivider: false)
             }
 
             VStack(spacing: 8) {
@@ -2865,7 +2873,7 @@ struct TranscriptDataSection: View {
                         .frame(maxWidth: .infinity)
                 }
                 .labButtonStyle()
-                .disabled(!model.hasTranscriptOutput)
+                .disabled(!hasOutput)
                 .help("Copy transcript text to the clipboard")
 
                 HStack(spacing: 8) {
@@ -2876,7 +2884,7 @@ struct TranscriptDataSection: View {
                             .frame(maxWidth: .infinity)
                     }
                     .labButtonStyle()
-                    .disabled(!model.hasTranscriptOutput)
+                    .disabled(!hasOutput)
                     .help("Save transcript as a text file")
 
                     Button {
@@ -2886,7 +2894,7 @@ struct TranscriptDataSection: View {
                             .frame(maxWidth: .infinity)
                     }
                     .labButtonStyle()
-                    .disabled(!model.hasTranscriptOutput)
+                    .disabled(!hasOutput)
                     .help("Save transcript as a Markdown file")
                 }
             }
