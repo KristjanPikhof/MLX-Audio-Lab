@@ -1174,6 +1174,7 @@ struct SampleControlPanel: View {
 
 struct TranscriptWorkspace: View {
     @Bindable var model: ProbeViewModel
+    @FocusState private var isTranscriptFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1218,6 +1219,7 @@ struct TranscriptWorkspace: View {
         ZStack(alignment: .topLeading) {
             TextEditor(text: $model.transcript)
                 .font(.system(.body, design: .default))
+                .focused($isTranscriptFocused)
                 .scrollContentBackground(.hidden)
                 .padding(14)
                 .background(.black.opacity(0.12), in: .rect(cornerRadius: 12))
@@ -1226,7 +1228,7 @@ struct TranscriptWorkspace: View {
                         .stroke(.white.opacity(0.10), lineWidth: 1)
                 }
 
-            if model.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if model.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isTranscriptFocused {
                 Text("No output yet.")
                     .font(.body)
                     .foregroundStyle(.tertiary)
