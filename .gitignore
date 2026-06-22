@@ -12,6 +12,7 @@ DerivedData/
 *.app/
 
 # Local runtime output
+.trekoon/
 *.log
 nemotron-probe*.log
 **/nemotron-probe*.log
