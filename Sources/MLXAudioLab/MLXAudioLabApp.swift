@@ -887,12 +887,20 @@ final class ProbeViewModel {
 struct ContentView: View {
     @Bindable var model: ProbeViewModel
 
+    private enum Layout {
+        static let edgeInset: CGFloat = 24
+        static let topChromeCompensation: CGFloat = 16
+        static let columnSpacing: CGFloat = 20
+        static let sidebarWidth: CGFloat = 320
+        static let performanceWidth: CGFloat = 260
+    }
+
     var body: some View {
         ZStack {
             LabBackdrop()
 
             if #available(macOS 26.0, *) {
-                GlassEffectContainer(spacing: 18) {
+                GlassEffectContainer(spacing: Layout.columnSpacing) {
                     workspace
                 }
             } else {
@@ -915,17 +923,19 @@ struct ContentView: View {
     }
 
     private var workspace: some View {
-        HStack(alignment: .top, spacing: 18) {
+        HStack(alignment: .top, spacing: Layout.columnSpacing) {
             LabSidebar(model: model)
-                .frame(width: 318)
+                .frame(width: Layout.sidebarWidth)
 
             TranscriptWorkspace(model: model)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             PerformancePanel(model: model)
-                .frame(width: 256)
+                .frame(width: Layout.performanceWidth)
         }
-        .padding(22)
+        .padding(.horizontal, Layout.edgeInset)
+        .padding(.bottom, Layout.edgeInset)
+        .padding(.top, Layout.edgeInset + Layout.topChromeCompensation)
     }
 }
 
@@ -1174,7 +1184,6 @@ struct SampleControlPanel: View {
 
 struct TranscriptWorkspace: View {
     @Bindable var model: ProbeViewModel
-    @FocusState private var isTranscriptFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1216,26 +1225,29 @@ struct TranscriptWorkspace: View {
     }
 
     private var transcriptEditor: some View {
-        ZStack(alignment: .topLeading) {
-            TextEditor(text: $model.transcript)
-                .font(.system(.body, design: .default))
-                .focused($isTranscriptFocused)
-                .scrollContentBackground(.hidden)
-                .padding(14)
-                .background(.black.opacity(0.12), in: .rect(cornerRadius: 12))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(.white.opacity(0.10), lineWidth: 1)
+        ScrollView(.vertical) {
+            Group {
+                if model.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("No output yet.")
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text(model.transcript)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
                 }
-
-            if model.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isTranscriptFocused {
-                Text("No output yet.")
-                    .font(.body)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 22)
-                    .allowsHitTesting(false)
             }
+            .font(.system(.body, design: .default))
+            .lineSpacing(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(18)
+        }
+        .scrollIndicators(.visible)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(.black.opacity(0.12), in: .rect(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(.white.opacity(0.10), lineWidth: 1)
         }
     }
 
