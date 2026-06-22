@@ -15,12 +15,17 @@ let package = Package(
         .package(
             url: "https://github.com/Blaizzy/mlx-audio-swift.git",
             revision: "3f6b0553188a921f635df54b5e20442001037336"
+        ),
+        .package(
+            url: "https://github.com/huggingface/swift-huggingface.git",
+            .upToNextMajor(from: "0.8.1")
         )
     ],
     targets: [
         .executableTarget(
             name: "MLXAudioLab",
             dependencies: [
+                .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
                 .product(name: "MLXAudioSTT", package: "mlx-audio-swift")
             ],

@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Darwin
 import Foundation
+import HuggingFace
 import MLXAudioCore
 import MLXAudioSTT
 import Observation
@@ -375,6 +376,40 @@ struct ModelPreparationResult: Sendable {
     let wasModelAlreadyLoaded: Bool
 }
 
+struct ModelDownloadProgress: Equatable, Sendable {
+    let modelName: String
+    let completedUnitCount: Int64
+    let totalUnitCount: Int64
+
+    init(modelName: String, progress: Progress) {
+        self.modelName = modelName
+        completedUnitCount = progress.completedUnitCount
+        totalUnitCount = progress.totalUnitCount
+    }
+
+    var fractionCompleted: Double? {
+        guard totalUnitCount > 0 else { return nil }
+        return min(max(Double(completedUnitCount) / Double(totalUnitCount), 0), 1)
+    }
+
+    var percentageText: String {
+        guard let fractionCompleted else { return "Preparing" }
+        return "\(Int((fractionCompleted * 100).rounded(.down)))%"
+    }
+
+    var byteProgressText: String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB]
+        formatter.countStyle = .file
+
+        let completed = formatter.string(fromByteCount: max(completedUnitCount, 0))
+        guard totalUnitCount > 0 else { return completed }
+
+        let total = formatter.string(fromByteCount: totalUnitCount)
+        return "\(completed) of \(total)"
+    }
+}
+
 struct TranscriptStatistics: Sendable {
     let words: Int
     let letters: Int
@@ -388,10 +423,17 @@ actor AudioModelTranscriber {
 
     private var loadedModels: [String: any STTGenerationModel] = [:]
 
-    func prepareModel(_ option: AudioModelOption) async throws -> ModelPreparationResult {
+    func prepareModel(
+        _ option: AudioModelOption,
+        onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)? = nil
+    ) async throws -> ModelPreparationResult {
         ProbeLog.write("model prepare requested repo=\(option.repoID)")
         let start = ContinuousClock.now
         let wasLoaded = loadedModels[option.id] != nil
+        if !wasLoaded {
+            try await ensureModelCached(option, onDownloadProgress: onDownloadProgress)
+            await onDownloadProgress?(nil)
+        }
         _ = try await loadedModel(for: option)
         let seconds = Self.seconds(since: start)
         ProbeLog.write("model prepare complete repo=\(option.repoID) seconds=\(seconds) wasLoaded=\(wasLoaded)")
@@ -533,6 +575,40 @@ actor AudioModelTranscriber {
         return model
     }
 
+    private func ensureModelCached(
+        _ option: AudioModelOption,
+        onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
+    ) async throws {
+        guard ModelCache.availability(for: option) != .available else { return }
+
+        let hfToken: String? = ProcessInfo.processInfo.environment["HF_TOKEN"]
+            ?? Bundle.main.object(forInfoDictionaryKey: "HF_TOKEN") as? String
+        let cache = HubCache.default
+        let client: HubClient
+        if let hfToken, !hfToken.isEmpty {
+            client = HubClient(host: HubClient.defaultHost, bearerToken: hfToken, cache: cache)
+        } else {
+            client = HubClient(cache: cache)
+        }
+
+        guard let repoID = Repo.ID(rawValue: option.repoID) else {
+            throw Self.makeError("Invalid repository ID: \(option.repoID)")
+        }
+
+        ProbeLog.write("model cache download begin repo=\(option.repoID)")
+        _ = try await ModelUtils.resolveOrDownloadModel(
+            client: client,
+            cache: cache,
+            repoID: repoID,
+            requiredExtension: "safetensors",
+            additionalMatchingPatterns: option.requiredFileNames,
+            progressHandler: { progress in
+                onDownloadProgress?(ModelDownloadProgress(modelName: option.displayName, progress: progress))
+            }
+        )
+        ProbeLog.write("model cache download complete repo=\(option.repoID)")
+    }
+
     private func generationParameters(
         for model: any STTGenerationModel,
         option: AudioModelOption
@@ -603,6 +679,7 @@ final class ProbeViewModel {
     var transcriptExportMessage: String?
     var pathActionMessage: String?
     var shouldFollowTranscript = true
+    var modelDownloadProgress: ModelDownloadProgress?
     var metrics = TranscriptionMetrics()
     var recordingElapsedSeconds: Double = 0
     var logDirectoryPath = ProbeLog.logDirectory().path
@@ -861,6 +938,7 @@ final class ProbeViewModel {
 
         let option = selectedModel
         errorMessage = nil
+        modelDownloadProgress = nil
         status = selectedModelAvailability == .available
             ? "Loading \(option.displayName)..."
             : "Downloading \(option.displayName)..."
@@ -870,7 +948,15 @@ final class ProbeViewModel {
         modelPreparationTask?.cancel()
         modelPreparationTask = Task {
             do {
-                let result = try await transcriber.prepareModel(option)
+                let result = try await transcriber.prepareModel(option) { [weak self] progress in
+                    guard let self else { return }
+                    modelDownloadProgress = progress
+                    if let progress {
+                        status = "Downloading \(option.displayName) \(progress.percentageText)"
+                    } else if isPreparingModel {
+                        status = "Loading \(option.displayName)..."
+                    }
+                }
                 loadedModelIDs.insert(option.id)
                 metrics.modelLoadSeconds = result.modelLoadSeconds
                 metrics.wasModelAlreadyLoaded = result.wasModelAlreadyLoaded
@@ -881,6 +967,7 @@ final class ProbeViewModel {
                 errorMessage = Self.describe(error)
                 ProbeLog.write("model preparation failed repo=\(option.repoID)", error: error)
             }
+            modelDownloadProgress = nil
             isPreparingModel = false
         }
     }
