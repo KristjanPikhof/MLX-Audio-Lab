@@ -267,12 +267,15 @@ actor AudioModelTranscriber {
         audioURL: URL,
         audioSeconds: Double,
         using option: AudioModelOption,
-        onPartialTranscript: (@Sendable (String) async -> Void)? = nil
+        onPartialTranscript: (@Sendable (String) async -> Void)? = nil,
+        onMetricsUpdate: (@Sendable (TranscriptionMetrics) async -> Void)? = nil
     ) async throws -> TranscriptionResult {
         ProbeLog.write(
             "transcribe begin repo=\(option.repoID) audio=\(audioURL.lastPathComponent) audioSeconds=\(audioSeconds)"
         )
         let totalStart = ContinuousClock.now
+        var metrics = TranscriptionMetrics(audioSeconds: audioSeconds)
+        await onMetricsUpdate?(metrics)
         try Task.checkCancellation()
 
         let audioLoadStart = ContinuousClock.now
@@ -284,12 +287,19 @@ actor AudioModelTranscriber {
             throw Self.makeError("The selected audio file has no readable samples.")
         }
         ProbeLog.write("audio load complete seconds=\(audioLoadSeconds) samples=\(totalSamples)")
+        metrics.audioLoadSeconds = audioLoadSeconds
+        metrics.totalSeconds = Self.seconds(since: totalStart)
+        await onMetricsUpdate?(metrics)
         try Task.checkCancellation()
 
         let modelLoadStart = ContinuousClock.now
         let wasLoaded = loadedModels[option.id] != nil
         let loadedModel = try await loadedModel(for: option)
         let modelLoadSeconds = Self.seconds(since: modelLoadStart)
+        metrics.modelLoadSeconds = modelLoadSeconds
+        metrics.wasModelAlreadyLoaded = wasLoaded
+        metrics.totalSeconds = Self.seconds(since: totalStart)
+        await onMetricsUpdate?(metrics)
         try Task.checkCancellation()
 
         let generationStart = ContinuousClock.now
@@ -317,13 +327,17 @@ actor AudioModelTranscriber {
                 audio: chunkAudio,
                 generationParameters: parameters
             )
-            try Task.checkCancellation()
+            modelReportedSeconds += output.totalTime
+            metrics.generationSeconds = Self.seconds(since: generationStart)
+            metrics.modelReportedSeconds = modelReportedSeconds
+            metrics.totalSeconds = Self.seconds(since: totalStart)
+            await onMetricsUpdate?(metrics)
 
+            try Task.checkCancellation()
             let chunkText = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !chunkText.isEmpty {
                 transcriptParts.append(chunkText)
             }
-            modelReportedSeconds += output.totalTime
 
             let partialTranscript = transcriptParts.joined(separator: " ")
             await onPartialTranscript?(partialTranscript)
@@ -336,15 +350,10 @@ actor AudioModelTranscriber {
         let generationSeconds = Self.seconds(since: generationStart)
         ProbeLog.write("generation complete seconds=\(generationSeconds) textLength=\(transcript.count)")
 
-        let metrics = TranscriptionMetrics(
-            audioSeconds: audioSeconds,
-            audioLoadSeconds: audioLoadSeconds,
-            modelLoadSeconds: modelLoadSeconds,
-            generationSeconds: generationSeconds,
-            modelReportedSeconds: modelReportedSeconds,
-            totalSeconds: Self.seconds(since: totalStart),
-            wasModelAlreadyLoaded: wasLoaded
-        )
+        metrics.generationSeconds = generationSeconds
+        metrics.modelReportedSeconds = modelReportedSeconds
+        metrics.totalSeconds = Self.seconds(since: totalStart)
+        await onMetricsUpdate?(metrics)
 
         let result = TranscriptionResult(text: transcript, metrics: metrics)
         ProbeLog.write("transcribe complete totalSeconds=\(metrics.totalSeconds)")
@@ -439,6 +448,7 @@ final class ProbeViewModel {
     var transcript = ""
     var errorMessage: String?
     var transcriptExportMessage: String?
+    var shouldFollowTranscript = true
     var metrics = TranscriptionMetrics()
     var recordingElapsedSeconds: Double = 0
     var logDirectoryPath = ProbeLog.logDirectory().path
@@ -670,7 +680,7 @@ final class ProbeViewModel {
                     replaceCurrentSample(with: sample)
                     transcript = ""
                     transcriptExportMessage = nil
-                    metrics = TranscriptionMetrics()
+                    metrics = TranscriptionMetrics(audioSeconds: sample.durationSeconds)
                     recordingElapsedSeconds = 0
                     errorMessage = nil
                     status = "Ready to run"
@@ -876,7 +886,7 @@ final class ProbeViewModel {
         errorMessage = nil
         transcript = ""
         transcriptExportMessage = nil
-        metrics = TranscriptionMetrics()
+        metrics = TranscriptionMetrics(audioSeconds: sample.durationSeconds)
 
         transcriptionTask?.cancel()
         transcriptionTask = Task {
@@ -888,6 +898,11 @@ final class ProbeViewModel {
                     onPartialTranscript: { partialTranscript in
                         await MainActor.run {
                             self.transcript = partialTranscript
+                        }
+                    },
+                    onMetricsUpdate: { updatedMetrics in
+                        await MainActor.run {
+                            self.metrics = updatedMetrics
                         }
                     }
                 )
@@ -1603,6 +1618,7 @@ struct SampleControlPanel: View {
 
 struct TranscriptWorkspace: View {
     @Bindable var model: ProbeViewModel
+    private let transcriptEndID = "transcript-end"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1628,6 +1644,16 @@ struct TranscriptWorkspace: View {
 
             Spacer()
 
+            Toggle(isOn: $model.shouldFollowTranscript) {
+                Label("Follow", systemImage: "arrow.down.to.line")
+            }
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            .fixedSize()
+            .help("Follow transcript output while it is generated")
+
             StatusCapsule(
                 text: statusTitle,
                 symbol: statusSymbol,
@@ -1646,24 +1672,38 @@ struct TranscriptWorkspace: View {
     }
 
     private var transcriptEditor: some View {
-        ScrollView(.vertical) {
-            Group {
-                if model.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("No output yet.")
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Text(model.transcript)
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Group {
+                        if model.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("No output yet.")
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            Text(model.transcript)
+                                .foregroundStyle(.primary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .font(.system(.body, design: .default))
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(18)
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(transcriptEndID)
                 }
             }
-            .font(.system(.body, design: .default))
-            .lineSpacing(3)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(18)
+            .scrollIndicators(.visible)
+            .onChange(of: model.transcript) {
+                scrollToBottom(proxy)
+            }
+            .onChange(of: model.shouldFollowTranscript) {
+                scrollToBottom(proxy, animated: false)
+            }
         }
-        .scrollIndicators(.visible)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.black.opacity(0.12), in: .rect(cornerRadius: 12))
         .overlay {
@@ -1710,6 +1750,18 @@ struct TranscriptWorkspace: View {
 
     private func formatSeconds(_ seconds: Double) -> String {
         ProbeViewModel.formatSeconds(seconds)
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        guard model.shouldFollowTranscript else { return }
+
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(transcriptEndID, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(transcriptEndID, anchor: .bottom)
+        }
     }
 }
 
