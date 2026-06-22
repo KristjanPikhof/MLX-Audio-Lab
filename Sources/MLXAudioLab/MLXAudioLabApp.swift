@@ -9,8 +9,15 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum AudioModelFamily: String, Sendable {
-    case nemotron
-    case parakeet
+    case nemotron = "Nemotron"
+    case parakeet = "Parakeet"
+    case qwen3ASR = "Qwen3 ASR"
+    case whisper = "Whisper"
+    case senseVoice = "SenseVoice"
+    case glmASR = "GLM-ASR"
+    case graniteSpeech = "Granite Speech"
+    case voxtralRealtime = "Voxtral Realtime"
+    case cohereTranscribe = "Cohere Transcribe"
 }
 
 struct AudioModelOption: Identifiable, Hashable, Sendable {
@@ -21,6 +28,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
     let downloadSizeDescription: String
     let subtitle: String
     let languageHint: String?
+    let requiredFileNames: [String]
 
     static let supported: [AudioModelOption] = [
         AudioModelOption(
@@ -30,7 +38,8 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             family: .nemotron,
             downloadSizeDescription: "~721 MB",
             subtitle: "8-bit MLX conversion; smaller download and good for quick local checks.",
-            languageHint: "auto"
+            languageHint: "auto",
+            requiredFileNames: ["config.json", "model.safetensors", "vocab.txt"]
         ),
         AudioModelOption(
             id: "parakeet-tdt-0.6b-v3",
@@ -39,7 +48,93 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             family: .parakeet,
             downloadSizeDescription: "~2.51 GB",
             subtitle: "MLX conversion of NVIDIA Parakeet v3; multilingual ASR comparison target.",
-            languageHint: nil
+            languageHint: nil,
+            requiredFileNames: ["config.json", "model.safetensors", "vocab.txt"]
+        ),
+        AudioModelOption(
+            id: "qwen3-asr-0.6b-4bit",
+            displayName: "Qwen3 ASR 0.6B 4-bit",
+            repoID: "mlx-community/Qwen3-ASR-0.6B-4bit",
+            family: .qwen3ASR,
+            downloadSizeDescription: "~708 MB",
+            subtitle: "Compact Qwen3 ASR conversion; good first comparison against Nemotron.",
+            languageHint: nil,
+            requiredFileNames: ["config.json", "model.safetensors", "merges.txt", "vocab.json"]
+        ),
+        AudioModelOption(
+            id: "qwen3-asr-1.7b-4bit",
+            displayName: "Qwen3 ASR 1.7B 4-bit",
+            repoID: "mlx-community/Qwen3-ASR-1.7B-4bit",
+            family: .qwen3ASR,
+            downloadSizeDescription: "~1.6 GB",
+            subtitle: "Larger Qwen3 ASR checkpoint for quality and speed comparison.",
+            languageHint: nil,
+            requiredFileNames: ["config.json", "model.safetensors", "merges.txt", "vocab.json"]
+        ),
+        AudioModelOption(
+            id: "whisper-large-v3-turbo-asr-fp16",
+            displayName: "Whisper Large v3 Turbo ASR fp16",
+            repoID: "mlx-community/whisper-large-v3-turbo-asr-fp16",
+            family: .whisper,
+            downloadSizeDescription: "~1.61 GB",
+            subtitle: "Whisper turbo baseline converted for mlx-audio.",
+            languageHint: nil,
+            requiredFileNames: ["config.json", "model.safetensors", "tokenizer.json", "merges.txt", "vocab.json"]
+        ),
+        AudioModelOption(
+            id: "sensevoice-small",
+            displayName: "SenseVoice Small",
+            repoID: "mlx-community/SenseVoiceSmall",
+            family: .senseVoice,
+            downloadSizeDescription: "~936 MB",
+            subtitle: "Fast non-autoregressive ASR with language, emotion, and event metadata.",
+            languageHint: nil,
+            requiredFileNames: [
+                "config.json",
+                "model.safetensors",
+                "am.mvn",
+                "chn_jpn_yue_eng_ko_spectok.bpe.model"
+            ]
+        ),
+        AudioModelOption(
+            id: "glm-asr-nano-2512-4bit",
+            displayName: "GLM-ASR Nano 2512 4-bit",
+            repoID: "mlx-community/GLM-ASR-Nano-2512-4bit",
+            family: .glmASR,
+            downloadSizeDescription: "~1.28 GB",
+            subtitle: "Small GLM decoder ASR model; useful English/Chinese comparison target.",
+            languageHint: nil,
+            requiredFileNames: ["config.json", "model.safetensors", "tokenizer.json"]
+        ),
+        AudioModelOption(
+            id: "granite-4.0-1b-speech-5bit",
+            displayName: "Granite 4.0 1B Speech 5-bit",
+            repoID: "mlx-community/granite-4.0-1b-speech-5bit",
+            family: .graniteSpeech,
+            downloadSizeDescription: "~2.22 GB",
+            subtitle: "IBM Granite speech model for ASR and translation-style experiments.",
+            languageHint: nil,
+            requiredFileNames: ["config.json", "model.safetensors", "tokenizer.json", "merges.txt", "vocab.json"]
+        ),
+        AudioModelOption(
+            id: "voxtral-mini-4b-realtime-4bit",
+            displayName: "Voxtral Mini 4B Realtime 4-bit",
+            repoID: "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit",
+            family: .voxtralRealtime,
+            downloadSizeDescription: "~3.13 GB",
+            subtitle: "Heavy streaming STT model; this app benchmarks it through offline chunks.",
+            languageHint: nil,
+            requiredFileNames: ["config.json", "model.safetensors", "tekken.json"]
+        ),
+        AudioModelOption(
+            id: "cohere-transcribe-03-2026-fp16",
+            displayName: "Cohere Transcribe 03-2026 fp16",
+            repoID: "beshkenadze/cohere-transcribe-03-2026-mlx-fp16",
+            family: .cohereTranscribe,
+            downloadSizeDescription: "~3.85 GiB",
+            subtitle: "Community MLX conversion of Cohere Transcribe; large experimental baseline.",
+            languageHint: nil,
+            requiredFileNames: ["config.json", "model.safetensors", "tokenizer.model"]
         )
     ]
 }
@@ -51,21 +146,24 @@ enum ModelLocalAvailability: Sendable {
 }
 
 enum ModelCache {
-    static func rootDirectory() -> URL {
+    static func hubCacheRootDirectory() -> URL {
         let env = ProcessInfo.processInfo.environment
-        let hubRoot: URL
 
         if let hubCache = env["HF_HUB_CACHE"], !hubCache.isEmpty {
-            hubRoot = URL(fileURLWithPath: expandTilde(hubCache), isDirectory: true)
-        } else if let hfHome = env["HF_HOME"], !hfHome.isEmpty {
-            hubRoot = URL(fileURLWithPath: expandTilde(hfHome), isDirectory: true)
-                .appending(path: "hub", directoryHint: .isDirectory)
-        } else {
-            hubRoot = FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: ".cache/huggingface/hub", directoryHint: .isDirectory)
+            return URL(fileURLWithPath: expandTilde(hubCache), isDirectory: true)
         }
 
-        return hubRoot.appending(path: "mlx-audio", directoryHint: .isDirectory)
+        if let hfHome = env["HF_HOME"], !hfHome.isEmpty {
+            return URL(fileURLWithPath: expandTilde(hfHome), isDirectory: true)
+                .appending(path: "hub", directoryHint: .isDirectory)
+        }
+
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: ".cache/huggingface/hub", directoryHint: .isDirectory)
+    }
+
+    static func rootDirectory() -> URL {
+        hubCacheRootDirectory().appending(path: "mlx-audio", directoryHint: .isDirectory)
     }
 
     static func directory(for option: AudioModelOption) -> URL {
@@ -90,6 +188,7 @@ enum ModelCache {
         guard fileManager.fileExists(atPath: configURL.path),
               let configData = try? Data(contentsOf: configURL),
               (try? JSONSerialization.jsonObject(with: configData)) != nil,
+              requiredFilesExist(for: option, in: directory),
               containsNonEmptyFile(withExtension: "safetensors", in: directory)
         else {
             return .incomplete
@@ -99,17 +198,47 @@ enum ModelCache {
     }
 
     static func delete(_ option: AudioModelOption) throws {
-        let directory = directory(for: option)
         let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
+        let candidates = [
+            directory(for: option),
+            huggingFaceRepositoryDirectory(for: option),
+            huggingFaceLockDirectory(for: option)
+        ].compactMap(\.self)
 
-        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-              isDirectory.boolValue
-        else {
-            return
+        for directory in candidates {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue
+            else {
+                continue
+            }
+
+            try fileManager.removeItem(at: directory)
         }
+    }
 
-        try fileManager.removeItem(at: directory)
+    private static func huggingFaceRepositoryDirectory(for option: AudioModelOption) -> URL? {
+        let parts = option.repoID.split(separator: "/", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return nil }
+
+        return hubCacheRootDirectory()
+            .appending(path: "models--\(parts[0])--\(parts[1])", directoryHint: .isDirectory)
+    }
+
+    private static func huggingFaceLockDirectory(for option: AudioModelOption) -> URL? {
+        guard let repositoryDirectory = huggingFaceRepositoryDirectory(for: option) else { return nil }
+
+        return hubCacheRootDirectory()
+            .appending(path: ".locks", directoryHint: .isDirectory)
+            .appending(path: repositoryDirectory.lastPathComponent, directoryHint: .isDirectory)
+    }
+
+    private static func requiredFilesExist(for option: AudioModelOption, in directory: URL) -> Bool {
+        option.requiredFileNames.allSatisfy { fileName in
+            let fileURL = directory.appending(path: fileName)
+            let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            return size > 0
+        }
     }
 
     private static func containsNonEmptyFile(withExtension fileExtension: String, in directory: URL) -> Bool {
@@ -373,6 +502,20 @@ actor AudioModelTranscriber {
             model = try await NemotronASRModel.fromPretrained(option.repoID)
         case .parakeet:
             model = try await ParakeetModel.fromPretrained(option.repoID)
+        case .qwen3ASR:
+            model = try await Qwen3ASRModel.fromPretrained(option.repoID)
+        case .whisper:
+            model = try await WhisperModel.fromPretrained(option.repoID)
+        case .senseVoice:
+            model = try await SenseVoiceModel.fromPretrained(option.repoID)
+        case .glmASR:
+            model = try await GLMASRModel.fromPretrained(option.repoID)
+        case .graniteSpeech:
+            model = try await GraniteSpeechModel.fromPretrained(option.repoID)
+        case .voxtralRealtime:
+            model = try await VoxtralRealtimeModel.fromPretrained(option.repoID)
+        case .cohereTranscribe:
+            model = try await CohereTranscribeModel.fromPretrained(option.repoID)
         }
 
         loadedModels[option.id] = model
@@ -394,7 +537,7 @@ actor AudioModelTranscriber {
             topP: defaults.topP,
             topK: defaults.topK,
             verbose: false,
-            language: option.languageHint,
+            language: option.languageHint ?? defaults.language,
             chunkDuration: chunkDuration,
             minChunkDuration: defaults.minChunkDuration,
             repetitionPenalty: defaults.repetitionPenalty,
@@ -755,7 +898,7 @@ final class ProbeViewModel {
 
                 loadedModelIDs.remove(option.id)
                 refreshModelAvailability()
-                status = "\(option.displayName) deleted"
+                status = "\(option.displayName) deleted from local cache"
                 ProbeLog.write("model delete complete repo=\(option.repoID)")
             } catch {
                 status = "Model delete failed"
@@ -1482,7 +1625,7 @@ struct ModelSetupPanel: View {
 
                 HStack(spacing: 8) {
                     Text(model.selectedModel.downloadSizeDescription)
-                    Text(model.selectedModel.family.rawValue.capitalized)
+                    Text(model.selectedModel.family.rawValue)
                 }
                 .font(.caption)
                 .foregroundStyle(.tertiary)

@@ -5,7 +5,7 @@
 [![SwiftPM](https://img.shields.io/badge/build-SwiftPM-6E6E73)](Package.swift)
 [![Apple Silicon recommended](https://img.shields.io/badge/Apple%20Silicon-recommended-111111?logo=apple&logoColor=white)](#requirements)
 [![MLX local ASR](https://img.shields.io/badge/MLX-local%20ASR-00A67E)](#supported-models)
-[![Models: Nemotron + Parakeet](https://img.shields.io/badge/models-Nemotron%20%2B%20Parakeet-7C3AED)](#supported-models)
+[![Models: 9 ASR families](https://img.shields.io/badge/models-9%20ASR%20families-7C3AED)](#supported-models)
 [![Media import](https://img.shields.io/badge/import-audio%20%2B%20video-2563EB)](#quick-start)
 [![TXT/MD export](https://img.shields.io/badge/export-TXT%20%2F%20MD-059669)](#quick-start)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -16,16 +16,44 @@ macOS and comparing their transcription performance.
 The goal is to provide a small local benchmark lab for MLX audio models: pick a
 model, download it from Hugging Face when needed, record audio or import media,
 and compare model load and generation speed. More compatible MLX audio models
-will be added soon.
+will be added as the Swift runtime support matures.
 
 <img width="1232" height="894" alt="image" src="https://github.com/user-attachments/assets/10675ff8-7dbc-4b24-8f9b-98d04f9c6216" />
 
 ## Supported models
 
+These models appear in the app picker because the current pinned
+`mlx-audio-swift` dependency exposes a compatible `STTGenerationModel` loader
+for each family.
+
 | Model | Hugging Face repo | Approx. download | Notes |
 |---|---|---:|---|
 | Nemotron 3.5 ASR Streaming 0.6B | `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit` | 721 MB | Smaller 8-bit MLX ASR model. |
 | Parakeet TDT 0.6B v3 | `mlx-community/parakeet-tdt-0.6b-v3` | 2.51 GB | MLX conversion of NVIDIA Parakeet v3 for multilingual ASR comparison. |
+| Qwen3 ASR 0.6B 4-bit | `mlx-community/Qwen3-ASR-0.6B-4bit` | 708 MB | Compact Qwen3 ASR option for fast comparison. |
+| Qwen3 ASR 1.7B 4-bit | `mlx-community/Qwen3-ASR-1.7B-4bit` | 1.6 GB | Larger Qwen3 ASR option for quality and speed checks. |
+| Whisper Large v3 Turbo ASR fp16 | `mlx-community/whisper-large-v3-turbo-asr-fp16` | 1.61 GB | Whisper Turbo baseline converted for `mlx-audio`. |
+| SenseVoice Small | `mlx-community/SenseVoiceSmall` | 936 MB | Non-autoregressive ASR with language, emotion, and event metadata. |
+| GLM-ASR Nano 2512 4-bit | `mlx-community/GLM-ASR-Nano-2512-4bit` | 1.28 GB | English/Chinese ASR model with GLM decoder. |
+| Granite 4.0 1B Speech 5-bit | `mlx-community/granite-4.0-1b-speech-5bit` | 2.22 GB | ASR and translation-style speech model. |
+| Voxtral Mini 4B Realtime 4-bit | `mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit` | 3.13 GB | Heavy streaming STT model; benchmarked here through offline chunks. |
+| Cohere Transcribe 03-2026 fp16 | `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` | 3.85 GiB | Large community MLX conversion for experimental comparison. |
+
+### Researched candidates
+
+These Hugging Face MLX audio sources are worth tracking, but they are not in
+the picker yet because they need a different UI path, are unusually heavy, or
+need fresh-download verification with `mlx-audio-swift`.
+
+| Candidate | Hugging Face repo | Status |
+|---|---|---|
+| Mega-ASR | `mlx-community/Mega-ASR-8bit` | Qwen3-derived routing model; promising but needs runtime validation. |
+| VibeVoice ASR | `mlx-community/VibeVoice-ASR-4bit` | ASR plus diarization tags; likely too large for the first app list. |
+| FireRed ASR 2 | `mlx-community/FireRedASR2-AED-mlx` | Swift class exists, but fresh download needs sidecar-file handling before picker use. |
+| Qwen3 ForcedAligner | `mlx-community/Qwen3-ForcedAligner-0.6B-4bit` | Alignment model; needs reference text input, not just audio transcription. |
+| Qwen2-Audio Instruct | `mlx-community/Qwen2-Audio-7B-Instruct-4bit` | Prompt-driven multimodal audio-text model, not a plain ASR row. |
+| MiMo ASR | `mlx-community/MiMo-V2.5-ASR-MLX-4bit` | MLX ASR repo, but it points at a different `mlx-audio` fork. |
+| Belle Whisper zh | `mlx-community/belle-whisper-large-v3-zh-8bit` | Whisper-family Chinese fine-tune; likely compatible but not yet tested. |
 
 ## Requirements
 
