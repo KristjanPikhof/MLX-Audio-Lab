@@ -888,17 +888,18 @@ struct ContentView: View {
     @Bindable var model: ProbeViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            header
-            modelPicker
-            controls
-            sampleView
-            metricsView
-            transcriptView
-            footer
+        ZStack {
+            LabBackdrop()
+
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer(spacing: 18) {
+                    workspace
+                }
+            } else {
+                workspace
+            }
         }
-        .padding(24)
-        .frame(minWidth: 780, minHeight: 640)
+        .frame(minWidth: 1120, minHeight: 720)
         .onAppear {
             model.refreshModelAvailability(updateStatus: true)
         }
@@ -913,230 +914,530 @@ struct ContentView: View {
         .fileDialogConfirmationLabel("Import WAV")
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("MLX Audio Lab")
-                .font(.largeTitle)
-                .fontWeight(.semibold)
-            Text("Test local MLX audio models on macOS and compare transcription speed.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+    private var workspace: some View {
+        HStack(alignment: .top, spacing: 18) {
+            LabSidebar(model: model)
+                .frame(width: 318)
+
+            TranscriptWorkspace(model: model)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            PerformancePanel(model: model)
+                .frame(width: 256)
         }
+        .padding(22)
     }
+}
 
-    private var modelPicker: some View {
-        VStack(alignment: .leading, spacing: 10) {
+struct LabBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(nsColor: .windowBackgroundColor),
+                    Color(red: 0.08, green: 0.095, blue: 0.10),
+                    Color(red: 0.11, green: 0.10, blue: 0.085)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            VStack(spacing: 0) {
+                Color(red: 0.12, green: 0.42, blue: 0.38)
+                    .opacity(0.18)
+                    .frame(height: 160)
+                    .blur(radius: 36)
+                Spacer()
+                Color(red: 0.58, green: 0.38, blue: 0.16)
+                    .opacity(0.12)
+                    .frame(height: 120)
+                    .blur(radius: 30)
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
+struct LabSidebar: View {
+    @Bindable var model: ProbeViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            BrandHeader()
+            ModelSetupPanel(model: model)
+            SampleControlPanel(model: model)
+            SystemPathsPanel(model: model)
+            Spacer(minLength: 0)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+struct BrandHeader: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
-                Picker("Model", selection: $model.selectedModelID) {
-                    ForEach(AudioModelOption.supported) { option in
-                        Text(option.displayName).tag(option.id)
-                    }
-                }
-                .frame(maxWidth: 430)
-                .disabled(model.modelControlsDisabled)
+                Image(systemName: "waveform.and.magnifyingglass")
+                    .font(.system(size: 22, weight: .semibold))
+                    .frame(width: 42, height: 42)
+                    .foregroundStyle(.white)
+                    .labGlassPanel(cornerRadius: 12, tint: .teal.opacity(0.34), interactive: false)
 
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MLX Audio Lab")
+                        .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    Text("Local ASR benchmark")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Label("Local", systemImage: "lock")
+                Label("WAV", systemImage: "waveform")
+                Label("MLX", systemImage: "apple.terminal")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .labGlassPanel(cornerRadius: 16, tint: .white.opacity(0.04), interactive: false)
+    }
+}
+
+struct ModelSetupPanel: View {
+    @Bindable var model: ProbeViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Model", symbol: "cpu")
+
+            Picker("Model", selection: $model.selectedModelID) {
+                ForEach(AudioModelOption.supported) { option in
+                    Text(option.displayName).tag(option.id)
+                }
+            }
+            .labelsHidden()
+            .disabled(model.modelControlsDisabled)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Label(model.selectedModelStatusText, systemImage: model.selectedModelStatusIcon)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(statusTint)
+
+                Text(model.selectedModel.repoID)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+
+                HStack(spacing: 8) {
+                    Text(model.selectedModel.downloadSizeDescription)
+                    Text(model.selectedModel.family.rawValue.capitalized)
+                }
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            }
+
+            HStack(spacing: 10) {
                 Button {
                     model.prepareSelectedModel()
                 } label: {
                     Label(model.selectedModelActionTitle, systemImage: model.selectedModelActionIcon)
-                        .frame(minWidth: 150)
+                        .frame(maxWidth: .infinity)
                 }
+                .labButtonStyle(prominent: true)
                 .disabled(!model.canPrepareSelectedModel)
 
                 Button {
                     model.refreshModelAvailability(updateStatus: true)
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 28)
                 }
+                .labButtonStyle()
                 .disabled(model.modelControlsDisabled)
-
-                Spacer()
+                .help("Refresh local model availability")
             }
-
-            HStack(spacing: 12) {
-                Label(model.selectedModelStatusText, systemImage: model.selectedModelStatusIcon)
-                    .foregroundStyle(model.selectedModelAvailability == .incomplete ? .orange : .secondary)
-                Text(model.selectedModel.downloadSizeDescription)
-                    .foregroundStyle(.secondary)
-                Text(model.selectedModel.repoID)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
-            .font(.callout)
-
-            Text(model.selectedModel.subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
-        .background(.quaternary.opacity(0.55), in: .rect(cornerRadius: 8))
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .labGlassPanel(cornerRadius: 16, tint: .teal.opacity(0.08), interactive: false)
     }
 
-    private var controls: some View {
-        HStack(spacing: 12) {
+    private var statusTint: Color {
+        if model.selectedModelIsLoaded { return .green }
+
+        switch model.selectedModelAvailability {
+        case .available:
+            return .green
+        case .notDownloaded:
+            return .secondary
+        case .incomplete:
+            return .orange
+        }
+    }
+}
+
+struct SampleControlPanel: View {
+    @Bindable var model: ProbeViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Audio sample", symbol: "waveform")
+            sampleSummary
+
             Button {
                 model.primaryButtonPressed()
             } label: {
                 Label(model.primaryButtonTitle, systemImage: model.isRecording ? "stop.fill" : "record.circle")
-                    .frame(minWidth: 120)
+                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .labButtonStyle(prominent: true)
             .tint(model.isRecording ? .red : .accentColor)
             .disabled(!model.canPressPrimaryButton)
             .accessibilityLabel(model.isRecording ? "Stop recording" : "Start recording")
 
-            Button {
-                model.clearOutput()
-            } label: {
-                Label("Clear", systemImage: "trash")
+            HStack(spacing: 10) {
+                Button {
+                    model.runSelectedModelForCurrentSample()
+                } label: {
+                    Label("Run", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .labButtonStyle(prominent: true)
+                .disabled(!model.canRunSelectedModel)
+
+                Button {
+                    model.clearOutput()
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 28)
+                }
+                .labButtonStyle()
+                .disabled(model.isRecording || model.isTranscribing || model.isPreparingModel)
+                .help("Clear sample and output")
             }
-            .controlSize(.large)
-            .disabled(model.isRecording || model.isTranscribing || model.isPreparingModel)
 
             Button {
                 model.beginImportAudio()
             } label: {
                 Label("Import WAV", systemImage: "square.and.arrow.down")
+                    .frame(maxWidth: .infinity)
             }
-            .controlSize(.large)
+            .labButtonStyle()
             .disabled(!model.canImportAudio)
-
-            Button {
-                model.runSelectedModelForCurrentSample()
-            } label: {
-                Label("Run Selected Model", systemImage: "play.fill")
-            }
-            .controlSize(.large)
-            .disabled(!model.canRunSelectedModel)
-
-            Spacer()
-
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(model.status)
-                    .font(.headline)
-                Text(formatSeconds(model.recordingElapsedSeconds))
-                    .font(.system(.title3, design: .monospaced))
-                    .foregroundStyle(model.isRecording ? .red : .secondary)
-            }
         }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .labGlassPanel(cornerRadius: 16, tint: .orange.opacity(0.07), interactive: false)
     }
 
-    private var sampleView: some View {
-        HStack(spacing: 12) {
-            if let sample = model.currentSample {
-                Label(sample.source.displayName, systemImage: sample.source.systemImage)
-                    .font(.headline)
+    @ViewBuilder
+    private var sampleSummary: some View {
+        if let sample = model.currentSample {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: sample.source.systemImage)
+                    .font(.title3)
+                    .frame(width: 32, height: 32)
+                    .foregroundStyle(.teal)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(sample.source.displayName)
+                        .font(.callout.weight(.medium))
                     Text(sample.displayName)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text("Audio length \(formatSeconds(sample.durationSeconds))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("Length \(ProbeViewModel.formatSeconds(sample.durationSeconds))")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
-            } else {
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
                 Label(model.currentSampleDescription, systemImage: model.currentSampleIcon)
-                    .font(.headline)
+                    .font(.callout.weight(.medium))
                     .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            if !model.runSelectedModelDisabledText.isEmpty {
-                Text(model.runSelectedModelDisabledText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(14)
-        .background(.quaternary.opacity(0.45), in: .rect(cornerRadius: 8))
-    }
-
-    private var metricsView: some View {
-        Grid(alignment: .leading, horizontalSpacing: 28, verticalSpacing: 8) {
-            GridRow {
-                MetricCell(title: "Audio length", value: formatSeconds(model.metrics.audioSeconds))
-                MetricCell(title: "Audio load", value: formatSeconds(model.metrics.audioLoadSeconds))
-                MetricCell(
-                    title: model.metrics.wasModelAlreadyLoaded ? "Model load cached" : "Model load",
-                    value: formatSeconds(model.metrics.modelLoadSeconds)
-                )
-            }
-            GridRow {
-                MetricCell(title: "Generation", value: formatSeconds(model.metrics.generationSeconds))
-                MetricCell(title: "Model reported", value: formatSeconds(model.metrics.modelReportedSeconds))
-                MetricCell(title: "Total", value: formatSeconds(model.metrics.totalSeconds))
-            }
-        }
-        .padding(14)
-        .background(.quaternary.opacity(0.6), in: .rect(cornerRadius: 8))
-    }
-
-    private var transcriptView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Output")
-                .font(.headline)
-            TextEditor(text: $model.transcript)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 8))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(.quaternary)
+                if !model.runSelectedModelDisabledText.isEmpty {
+                    Text(model.runSelectedModelDisabledText)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
-        }
-    }
-
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let errorMessage = model.errorMessage {
-                Text(errorMessage)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
             }
-            if !model.logDirectoryPath.isEmpty {
-                Text("Logs: \(model.logDirectoryPath)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
-            Text("Models: \(model.modelCacheRootPath)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
         }
-    }
-
-    private func formatSeconds(_ seconds: Double) -> String {
-        String(format: "%.3f s", seconds)
     }
 }
 
-struct MetricCell: View {
+struct TranscriptWorkspace: View {
+    @Bindable var model: ProbeViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            workspaceHeader
+            transcriptEditor
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .labGlassPanel(cornerRadius: 18, tint: .white.opacity(0.04), interactive: false)
+    }
+
+    private var workspaceHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Transcript")
+                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                Text(model.selectedModel.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer()
+
+            StatusCapsule(
+                text: model.status,
+                symbol: statusSymbol,
+                tint: statusTint
+            )
+
+            if model.isRecording {
+                Text(formatSeconds(model.recordingElapsedSeconds))
+                    .font(.system(.title3, design: .monospaced, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    private var transcriptEditor: some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: $model.transcript)
+                .font(.system(.body, design: .default))
+                .scrollContentBackground(.hidden)
+                .padding(14)
+                .background(.black.opacity(0.12), in: .rect(cornerRadius: 12))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(.white.opacity(0.10), lineWidth: 1)
+                }
+
+            if model.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("No output yet.")
+                    .font(.body)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 22)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var statusSymbol: String {
+        if model.isRecording { return "record.circle.fill" }
+        if model.isTranscribing || model.isPreparingModel { return "hourglass" }
+        if model.errorMessage != nil { return "exclamationmark.triangle.fill" }
+        return "checkmark.circle.fill"
+    }
+
+    private var statusTint: Color {
+        if model.isRecording { return .red }
+        if model.isTranscribing || model.isPreparingModel { return .orange }
+        if model.errorMessage != nil { return .red }
+        return .green
+    }
+
+    private func formatSeconds(_ seconds: Double) -> String {
+        ProbeViewModel.formatSeconds(seconds)
+    }
+}
+
+struct PerformancePanel: View {
+    let model: ProbeViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Performance", symbol: "speedometer")
+
+            VStack(spacing: 0) {
+                MetricRow(title: "Audio length", value: formatSeconds(model.metrics.audioSeconds))
+                MetricRow(title: "Audio load", value: formatSeconds(model.metrics.audioLoadSeconds))
+                MetricRow(
+                    title: model.metrics.wasModelAlreadyLoaded ? "Model cached" : "Model load",
+                    value: formatSeconds(model.metrics.modelLoadSeconds)
+                )
+                MetricRow(title: "Generation", value: formatSeconds(model.metrics.generationSeconds))
+                MetricRow(title: "Model reported", value: formatSeconds(model.metrics.modelReportedSeconds))
+                MetricRow(title: "Total", value: formatSeconds(model.metrics.totalSeconds), showDivider: false)
+            }
+
+            if let errorMessage = model.errorMessage {
+                ErrorNotice(message: errorMessage)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .labGlassPanel(cornerRadius: 16, tint: .green.opacity(0.06), interactive: false)
+    }
+
+    private func formatSeconds(_ seconds: Double) -> String {
+        ProbeViewModel.formatSeconds(seconds)
+    }
+}
+
+struct SystemPathsPanel: View {
+    let model: ProbeViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "Local paths", symbol: "folder")
+            PathLine(title: "Logs", value: model.logDirectoryPath)
+            PathLine(title: "Models", value: model.modelCacheRootPath)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .labGlassPanel(cornerRadius: 16, tint: .white.opacity(0.03), interactive: false)
+    }
+}
+
+struct SectionHeader: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        Label(title, systemImage: symbol)
+            .font(.headline)
+            .foregroundStyle(.primary)
+    }
+}
+
+struct StatusCapsule: View {
+    let text: String
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        Label(text, systemImage: symbol)
+            .font(.callout.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .foregroundStyle(tint)
+            .labGlassPanel(cornerRadius: 14, tint: tint.opacity(0.12), interactive: false)
+    }
+}
+
+struct MetricRow: View {
+    let title: String
+    let value: String
+    var showDivider = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(value)
+                    .font(.system(.body, design: .monospaced, weight: .semibold))
+                    .monospacedDigit()
+                    .textSelection(.enabled)
+            }
+            .padding(.vertical, 10)
+
+            if showDivider {
+                Divider()
+                    .opacity(0.45)
+            }
+        }
+    }
+}
+
+struct ErrorNotice: View {
+    let message: String
+
+    var body: some View {
+        Label {
+            Text(message)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+        }
+        .font(.caption)
+        .foregroundStyle(.red)
+        .padding(12)
+        .labGlassPanel(cornerRadius: 12, tint: .red.opacity(0.10), interactive: false)
+    }
+}
+
+struct PathLine: View {
     let title: String
     let value: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.caption)
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(.body, design: .monospaced))
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
         }
-        .frame(minWidth: 150, alignment: .leading)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func labGlassPanel(
+        cornerRadius: CGFloat,
+        tint: Color,
+        interactive: Bool
+    ) -> some View {
+        if #available(macOS 26.0, *) {
+            if interactive {
+                self.glassEffect(.regular.tint(tint).interactive(), in: .rect(cornerRadius: cornerRadius))
+            } else {
+                self.glassEffect(.regular.tint(tint), in: .rect(cornerRadius: cornerRadius))
+            }
+        } else {
+            self
+                .background(.ultraThinMaterial, in: .rect(cornerRadius: cornerRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .stroke(.white.opacity(0.12), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
+        }
+    }
+
+    @ViewBuilder
+    func labButtonStyle(prominent: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            if prominent {
+                self.buttonStyle(.glassProminent)
+            } else {
+                self.buttonStyle(.glass)
+            }
+        } else {
+            if prominent {
+                self.buttonStyle(.borderedProminent)
+            } else {
+                self.buttonStyle(.bordered)
+            }
+        }
     }
 }
 
