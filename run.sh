@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 DERIVED_DATA="${MLX_AUDIO_LAB_DERIVED_DATA:-$PWD/.derivedData}"
+BUILD_DESTINATION="${MLX_AUDIO_LAB_DESTINATION:-platform=macOS,arch=arm64}"
 PRODUCTS_DIR="$DERIVED_DATA/Build/Products/Debug"
 APP_BUNDLE="$PWD/.run/MLX Audio Lab.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -13,7 +14,7 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 xcodebuild \
   -quiet \
   -scheme MLXAudioLab \
-  -destination 'platform=macOS,arch=arm64' \
+  -destination "$BUILD_DESTINATION" \
   -derivedDataPath "$DERIVED_DATA" \
   COMPILER_INDEX_STORE_ENABLE=NO \
   build
@@ -27,7 +28,7 @@ cp "$PWD/Sources/MLXAudioLab/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icn
 
 for bundle in "$PRODUCTS_DIR"/*.bundle; do
   [ -d "$bundle" ] || continue
-  cp -R "$bundle" "$APP_MACOS/"
+  cp -R "$bundle" "$APP_BUNDLE/"
 done
 
 METALLIB="$(find "$PRODUCTS_DIR/mlx-swift_Cmlx.bundle" -name default.metallib -print -quit)"
