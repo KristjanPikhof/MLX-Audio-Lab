@@ -128,6 +128,11 @@ is already available on the computer or whether it still needs to be downloaded.
 After switching models, click **Run Selected Model** to regenerate output from
 the current audio sample.
 
+When a model is downloading, a progress banner appears at the top of the
+window with the model name, percentage, downloaded bytes, and a linear progress
+bar. This is driven by Hugging Face download progress, so large models should no
+longer look stuck during the first install.
+
 The transcript panel has a **Follow** checkbox, enabled by default, to keep the
 latest generated text in view while transcription is running.
 

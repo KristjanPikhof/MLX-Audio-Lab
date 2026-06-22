@@ -1560,7 +1560,19 @@ struct ContentView: View {
             } else {
                 workspace
             }
+
+            if let progress = model.modelDownloadProgress {
+                VStack {
+                    DownloadProgressBanner(progress: progress)
+                    Spacer()
+                }
+                .padding(.horizontal, Layout.edgeInset)
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(2)
+            }
         }
+        .animation(.easeInOut(duration: 0.18), value: model.modelDownloadProgress)
         .frame(minWidth: 1120, minHeight: 775)
         .onAppear {
             model.refreshModelAvailability(updateStatus: true)
@@ -1602,6 +1614,38 @@ struct ContentView: View {
         .padding(.horizontal, Layout.edgeInset)
         .padding(.bottom, Layout.edgeInset)
         .padding(.top, Layout.edgeInset + Layout.topChromeCompensation)
+    }
+}
+
+struct DownloadProgressBanner: View {
+    let progress: ModelDownloadProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Label("Downloading \(progress.modelName)", systemImage: "arrow.down.circle.fill")
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 12)
+
+                Text("\(progress.percentageText)  \(progress.byteProgressText)")
+                    .font(.caption.monospacedDigit().weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            ProgressView(value: progress.fractionCompleted)
+                .progressViewStyle(.linear)
+                .tint(.orange)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: 680)
+        .labGlassPanel(cornerRadius: 12, tint: .orange.opacity(0.16), interactive: false)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Downloading \(progress.modelName)")
+        .accessibilityValue("\(progress.percentageText), \(progress.byteProgressText)")
     }
 }
 
