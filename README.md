@@ -109,7 +109,7 @@ cd MLXAudioLab
 Running `xcodebuild ... build` by itself only compiles the package. Use
 `./run.sh` to build, package, sign, and open the macOS app bundle.
 
-The app window has a minimum size of 1120 x 750.
+The app window has a minimum size of 1120 x 775.
 
 Click **Record**, speak, then click **Stop**. The recording is kept as the
 current audio sample for this app session and is transcribed with the selected
@@ -130,8 +130,8 @@ the current audio sample.
 
 When a model is downloading, a progress banner appears at the top of the
 window with the model name, percentage, downloaded bytes, and a linear progress
-bar. This is driven by Hugging Face download progress, so large models should no
-longer look stuck during the first install.
+bar. It combines Hugging Face download progress with local cache byte sampling,
+so large Xet-backed models should not look stuck during the first install.
 
 The transcript panel has a **Follow** checkbox, enabled by default, to keep the
 latest generated text in view while transcription is running.

@@ -27,6 +27,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
     let repoID: String
     let family: AudioModelFamily
     let downloadSizeDescription: String
+    let downloadSizeBytes: Int64
     let subtitle: String
     let languageHint: String?
     let requiredFileNames: [String]
@@ -38,6 +39,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b",
             family: .nemotron,
             downloadSizeDescription: "~1.28 GB",
+            downloadSizeBytes: 1_276_296_562,
             subtitle: "Full-quality bf16 MLX conversion; larger than 8-bit but the recommended default.",
             languageHint: "auto",
             requiredFileNames: ["config.json", "model.safetensors", "vocab.txt"]
@@ -48,6 +50,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
             family: .nemotron,
             downloadSizeDescription: "~721 MB",
+            downloadSizeBytes: 755_836_822,
             subtitle: "8-bit MLX conversion; smaller download and good for quick local checks.",
             languageHint: "auto",
             requiredFileNames: ["config.json", "model.safetensors", "vocab.txt"]
@@ -58,6 +61,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/parakeet-tdt-0.6b-v3",
             family: .parakeet,
             downloadSizeDescription: "~2.51 GB",
+            downloadSizeBytes: 2_508_579_601,
             subtitle: "MLX conversion of NVIDIA Parakeet v3; multilingual ASR comparison target.",
             languageHint: nil,
             requiredFileNames: ["config.json", "model.safetensors", "vocab.txt"]
@@ -68,6 +72,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/Qwen3-ASR-0.6B-4bit",
             family: .qwen3ASR,
             downloadSizeDescription: "~708 MB",
+            downloadSizeBytes: 708_000_000,
             subtitle: "Compact Qwen3 ASR conversion; good first comparison against Nemotron.",
             languageHint: nil,
             requiredFileNames: ["config.json", "model.safetensors", "merges.txt", "vocab.json"]
@@ -78,6 +83,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/Qwen3-ASR-1.7B-4bit",
             family: .qwen3ASR,
             downloadSizeDescription: "~1.6 GB",
+            downloadSizeBytes: 1_600_000_000,
             subtitle: "Larger Qwen3 ASR checkpoint for quality and speed comparison.",
             languageHint: nil,
             requiredFileNames: ["config.json", "model.safetensors", "merges.txt", "vocab.json"]
@@ -88,6 +94,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/whisper-large-v3-turbo-asr-fp16",
             family: .whisper,
             downloadSizeDescription: "~1.61 GB",
+            downloadSizeBytes: 1_610_000_000,
             subtitle: "Whisper turbo baseline converted for mlx-audio.",
             languageHint: nil,
             requiredFileNames: ["config.json", "model.safetensors", "tokenizer.json", "merges.txt", "vocab.json"]
@@ -98,6 +105,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/SenseVoiceSmall",
             family: .senseVoice,
             downloadSizeDescription: "~936 MB",
+            downloadSizeBytes: 936_000_000,
             subtitle: "Fast non-autoregressive ASR with language, emotion, and event metadata.",
             languageHint: nil,
             requiredFileNames: [
@@ -113,6 +121,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/GLM-ASR-Nano-2512-4bit",
             family: .glmASR,
             downloadSizeDescription: "~1.28 GB",
+            downloadSizeBytes: 1_280_000_000,
             subtitle: "Small GLM decoder ASR model; useful English/Chinese comparison target.",
             languageHint: nil,
             requiredFileNames: ["config.json", "model.safetensors", "tokenizer.json"]
@@ -123,6 +132,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/granite-4.0-1b-speech-5bit",
             family: .graniteSpeech,
             downloadSizeDescription: "~2.22 GB",
+            downloadSizeBytes: 2_220_000_000,
             subtitle: "IBM Granite speech model for ASR and translation-style experiments.",
             languageHint: nil,
             requiredFileNames: ["config.json", "model.safetensors", "tokenizer.json", "merges.txt", "vocab.json"]
@@ -133,6 +143,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit",
             family: .voxtralRealtime,
             downloadSizeDescription: "~3.13 GB",
+            downloadSizeBytes: 3_130_000_000,
             subtitle: "Heavy streaming STT model; this app benchmarks it through offline chunks.",
             languageHint: nil,
             requiredFileNames: ["config.json", "model.safetensors", "tekken.json"]
@@ -143,6 +154,7 @@ struct AudioModelOption: Identifiable, Hashable, Sendable {
             repoID: "beshkenadze/cohere-transcribe-03-2026-mlx-fp16",
             family: .cohereTranscribe,
             downloadSizeDescription: "~3.85 GiB",
+            downloadSizeBytes: 4_133_263_974,
             subtitle: "Community MLX conversion of Cohere Transcribe; large experimental baseline.",
             languageHint: nil,
             requiredFileNames: ["config.json", "model.safetensors", "tokenizer.model"]
@@ -182,6 +194,19 @@ enum ModelCache {
             path: option.repoID.replacingOccurrences(of: "/", with: "_"),
             directoryHint: .isDirectory
         )
+    }
+
+    static func downloadedByteCount(for option: AudioModelOption) -> Int64 {
+        let directory = directory(for: option)
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            return 0
+        }
+
+        return min(byteCount(at: directory, fileManager: fileManager), option.downloadSizeBytes)
     }
 
     static func availability(for option: AudioModelOption) -> ModelLocalAvailability {
@@ -270,6 +295,38 @@ enum ModelCache {
         }
 
         return false
+    }
+
+    private static func byteCount(at directory: URL, fileManager: FileManager) -> Int64 {
+        let keys: Set<URLResourceKey> = [
+            .fileSizeKey,
+            .isRegularFileKey,
+            .isSymbolicLinkKey
+        ]
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: []
+        ) else {
+            return 0
+        }
+
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: keys),
+                  values.isRegularFile == true || values.isSymbolicLink == true
+            else {
+                continue
+            }
+
+            let sizeURL = values.isSymbolicLink == true
+                ? fileURL.resolvingSymlinksInPath()
+                : fileURL
+            let size = (try? sizeURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            total += Int64(max(size, 0))
+        }
+
+        return total
     }
 
     private static func expandTilde(_ path: String) -> String {
@@ -378,18 +435,32 @@ struct ModelPreparationResult: Sendable {
 
 struct ModelDownloadProgress: Equatable, Sendable {
     let modelName: String
-    let completedUnitCount: Int64
-    let totalUnitCount: Int64
+    let completedBytes: Int64
+    let totalBytes: Int64
 
-    init(modelName: String, progress: Progress) {
+    init(modelName: String, progress: Progress, fallbackTotalBytes: Int64) {
         self.modelName = modelName
-        completedUnitCount = progress.completedUnitCount
-        totalUnitCount = progress.totalUnitCount
+        completedBytes = max(progress.completedUnitCount, 0)
+        totalBytes = max(progress.totalUnitCount, fallbackTotalBytes)
+    }
+
+    init(modelName: String, completedBytes: Int64, totalBytes: Int64) {
+        self.modelName = modelName
+        self.completedBytes = max(completedBytes, 0)
+        self.totalBytes = max(totalBytes, 0)
+    }
+
+    func withCompletedBytes(_ bytes: Int64) -> ModelDownloadProgress {
+        ModelDownloadProgress(
+            modelName: modelName,
+            completedBytes: bytes,
+            totalBytes: totalBytes
+        )
     }
 
     var fractionCompleted: Double? {
-        guard totalUnitCount > 0 else { return nil }
-        return min(max(Double(completedUnitCount) / Double(totalUnitCount), 0), 1)
+        guard totalBytes > 0 else { return nil }
+        return min(max(Double(displayedCompletedBytes) / Double(totalBytes), 0), 1)
     }
 
     var percentageText: String {
@@ -402,11 +473,16 @@ struct ModelDownloadProgress: Equatable, Sendable {
         formatter.allowedUnits = [.useMB, .useGB]
         formatter.countStyle = .file
 
-        let completed = formatter.string(fromByteCount: max(completedUnitCount, 0))
-        guard totalUnitCount > 0 else { return completed }
+        let completed = formatter.string(fromByteCount: displayedCompletedBytes)
+        guard totalBytes > 0 else { return completed }
 
-        let total = formatter.string(fromByteCount: totalUnitCount)
+        let total = formatter.string(fromByteCount: totalBytes)
         return "\(completed) of \(total)"
+    }
+
+    private var displayedCompletedBytes: Int64 {
+        guard totalBytes > 0 else { return completedBytes }
+        return min(completedBytes, totalBytes)
     }
 }
 
@@ -595,18 +671,66 @@ actor AudioModelTranscriber {
             throw Self.makeError("Invalid repository ID: \(option.repoID)")
         }
 
-        ProbeLog.write("model cache download begin repo=\(option.repoID)")
-        _ = try await ModelUtils.resolveOrDownloadModel(
-            client: client,
-            cache: cache,
-            repoID: repoID,
-            requiredExtension: "safetensors",
-            additionalMatchingPatterns: option.requiredFileNames,
-            progressHandler: { progress in
-                onDownloadProgress?(ModelDownloadProgress(modelName: option.displayName, progress: progress))
-            }
+        let progressSampler = startDownloadProgressSampler(
+            for: option,
+            onDownloadProgress: onDownloadProgress
         )
+
+        ProbeLog.write("model cache download begin repo=\(option.repoID)")
+        do {
+            _ = try await ModelUtils.resolveOrDownloadModel(
+                client: client,
+                cache: cache,
+                repoID: repoID,
+                requiredExtension: "safetensors",
+                additionalMatchingPatterns: option.requiredFileNames,
+                progressHandler: { progress in
+                    onDownloadProgress?(
+                        ModelDownloadProgress(
+                            modelName: option.displayName,
+                            progress: progress,
+                            fallbackTotalBytes: option.downloadSizeBytes
+                        )
+                    )
+                }
+            )
+            await stopDownloadProgressSampler(progressSampler)
+        } catch {
+            await stopDownloadProgressSampler(progressSampler)
+            throw error
+        }
         ProbeLog.write("model cache download complete repo=\(option.repoID)")
+    }
+
+    private func startDownloadProgressSampler(
+        for option: AudioModelOption,
+        onDownloadProgress: (@MainActor @Sendable (ModelDownloadProgress?) -> Void)?
+    ) -> Task<Void, Never>? {
+        guard let onDownloadProgress else { return nil }
+
+        return Task.detached(priority: .utility) { [option, onDownloadProgress] in
+            while !Task.isCancelled {
+                let completedBytes = ModelCache.downloadedByteCount(for: option)
+                if completedBytes > 0 {
+                    await onDownloadProgress(
+                        ModelDownloadProgress(
+                            modelName: option.displayName,
+                            completedBytes: completedBytes,
+                            totalBytes: option.downloadSizeBytes
+                        )
+                    )
+                }
+
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+    }
+
+    private func stopDownloadProgressSampler(_ sampler: Task<Void, Never>?) async {
+        sampler?.cancel()
+        if let sampler {
+            _ = await sampler.result
+        }
     }
 
     private func generationParameters(
@@ -938,7 +1062,7 @@ final class ProbeViewModel {
 
         let option = selectedModel
         errorMessage = nil
-        modelDownloadProgress = nil
+        updateModelDownloadProgress(nil)
         status = selectedModelAvailability == .available
             ? "Loading \(option.displayName)..."
             : "Downloading \(option.displayName)..."
@@ -950,9 +1074,9 @@ final class ProbeViewModel {
             do {
                 let result = try await transcriber.prepareModel(option) { [weak self] progress in
                     guard let self else { return }
-                    modelDownloadProgress = progress
-                    if let progress {
-                        status = "Downloading \(option.displayName) \(progress.percentageText)"
+                    updateModelDownloadProgress(progress)
+                    if let modelDownloadProgress {
+                        status = "Downloading \(option.displayName) \(modelDownloadProgress.percentageText)"
                     } else if isPreparingModel {
                         status = "Loading \(option.displayName)..."
                     }
@@ -967,8 +1091,23 @@ final class ProbeViewModel {
                 errorMessage = Self.describe(error)
                 ProbeLog.write("model preparation failed repo=\(option.repoID)", error: error)
             }
-            modelDownloadProgress = nil
+            updateModelDownloadProgress(nil)
             isPreparingModel = false
+        }
+    }
+
+    private func updateModelDownloadProgress(_ progress: ModelDownloadProgress?) {
+        guard let progress else {
+            modelDownloadProgress = nil
+            return
+        }
+
+        if let current = modelDownloadProgress,
+           current.modelName == progress.modelName,
+           current.completedBytes > progress.completedBytes {
+            modelDownloadProgress = progress.withCompletedBytes(current.completedBytes)
+        } else {
+            modelDownloadProgress = progress
         }
     }
 
