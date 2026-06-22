@@ -602,7 +602,6 @@ final class ProbeViewModel {
         metrics = TranscriptionMetrics()
         recordingElapsedSeconds = 0
         status = "Requesting microphone access..."
-        cleanupTemporaryRecordings()
 
         Task {
             let granted = await Self.requestMicrophoneAccess()
@@ -662,22 +661,32 @@ final class ProbeViewModel {
         }
 
         let option = selectedModel
+        self.recordingURL = nil
+        let sample = AudioSample(
+            id: UUID(),
+            url: recordingURL,
+            source: .recorded,
+            displayName: recordingURL.lastPathComponent,
+            durationSeconds: elapsed,
+            createdAt: Date()
+        )
+        replaceCurrentSample(with: sample)
+        startTranscription(sample: sample, option: option)
+    }
+
+    private func startTranscription(sample: AudioSample, option: AudioModelOption) {
         status = "Transcribing with \(option.displayName)..."
         isTranscribing = true
         errorMessage = nil
-        self.recordingURL = nil
+        transcript = ""
+        metrics = TranscriptionMetrics()
 
         transcriptionTask?.cancel()
         transcriptionTask = Task {
-            defer {
-                try? FileManager.default.removeItem(at: recordingURL)
-                ProbeLog.write("temporary recording deleted recording=\(recordingURL.lastPathComponent)")
-            }
-
             do {
                 let result = try await transcriber.transcribe(
-                    recordingURL: recordingURL,
-                    recordingSeconds: elapsed,
+                    audioURL: sample.url,
+                    audioSeconds: sample.durationSeconds,
                     using: option
                 )
                 self.loadedModelIDs.insert(option.id)
@@ -696,6 +705,7 @@ final class ProbeViewModel {
     }
 
     func clearOutput() {
+        deleteCurrentSample()
         transcript = ""
         errorMessage = nil
         status = idleStatusForSelectedModel()
@@ -716,6 +726,64 @@ final class ProbeViewModel {
         case .incomplete:
             return "Repair the selected model cache before recording"
         }
+    }
+
+    private func importAudioSample(from sourceURL: URL) throws -> AudioSample {
+        guard sourceURL.pathExtension.lowercased() == "wav" else {
+            throw Self.makeError("Only WAV files can be imported.")
+        }
+
+        let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let directory = Self.recordingDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let destinationURL = directory.appending(path: "sample-upload-\(UUID().uuidString).wav")
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            let durationSeconds = try Self.audioDurationSeconds(for: destinationURL)
+            guard durationSeconds > 0 else {
+                throw Self.makeError("The selected WAV file has no readable audio.")
+            }
+
+            return AudioSample(
+                id: UUID(),
+                url: destinationURL,
+                source: .imported,
+                displayName: sourceURL.lastPathComponent,
+                durationSeconds: durationSeconds,
+                createdAt: Date()
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: destinationURL)
+            throw error
+        }
+    }
+
+    private func replaceCurrentSample(with sample: AudioSample) {
+        let previousSample = currentSample
+        currentSample = sample
+
+        if let previousSample, previousSample.url != sample.url {
+            try? FileManager.default.removeItem(at: previousSample.url)
+            ProbeLog.write("temporary sample replaced file=\(previousSample.url.lastPathComponent)")
+        }
+    }
+
+    private func deleteCurrentSample() {
+        guard let sample = currentSample else { return }
+        currentSample = nil
+        try? FileManager.default.removeItem(at: sample.url)
+        ProbeLog.write("temporary sample deleted file=\(sample.url.lastPathComponent)")
     }
 
     private func startTimer() {
@@ -747,8 +815,8 @@ final class ProbeViewModel {
         return directory.appending(path: "recording-\(UUID().uuidString).wav")
     }
 
-    private func cleanupTemporaryRecordings() {
-        let directory = Self.recordingDirectory()
+    private static func cleanupTemporaryAudioFiles() {
+        let directory = recordingDirectory()
         guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
             return
         }
@@ -760,6 +828,21 @@ final class ProbeViewModel {
 
     private static func recordingDirectory() -> URL {
         FileManager.default.temporaryDirectory.appending(path: "MLXAudioLabRecordings", directoryHint: .isDirectory)
+    }
+
+    private static func audioDurationSeconds(for url: URL) throws -> Double {
+        let audioFile = try AVAudioFile(forReading: url)
+        let sampleRate = audioFile.fileFormat.sampleRate
+        guard sampleRate > 0 else {
+            throw makeError("The selected WAV file has an invalid sample rate.")
+        }
+
+        let durationSeconds = Double(audioFile.length) / sampleRate
+        guard durationSeconds.isFinite, durationSeconds > 0 else {
+            throw makeError("The selected WAV file has no readable audio.")
+        }
+
+        return durationSeconds
     }
 
     private nonisolated static func requestMicrophoneAccess() async -> Bool {
@@ -778,6 +861,18 @@ final class ProbeViewModel {
         @unknown default:
             return false
         }
+    }
+
+    nonisolated static func formatSeconds(_ seconds: Double) -> String {
+        String(format: "%.3f s", seconds)
+    }
+
+    private nonisolated static func makeError(_ description: String) -> NSError {
+        NSError(
+            domain: "MLXAudioLab",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: description]
+        )
     }
 
     nonisolated static func describe(_ error: Error) -> String {
