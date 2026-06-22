@@ -3310,7 +3310,8 @@ private enum AboutPanel {
     private static func aboutOptions() -> [NSApplication.AboutPanelOptionKey: Any] {
         [
             .applicationName: applicationName,
-            .applicationVersion: "Version \(shortVersion) (\(buildVersion))",
+            .applicationVersion: shortVersion,
+            .version: "",
             .credits: credits()
         ]
     }
@@ -3323,11 +3324,10 @@ private enum AboutPanel {
         return NSAttributedString(
             string: """
             Local speech transcription and ASR model comparison for Apple Silicon.
-
             Audio stays on this Mac. Models are downloaded into the local Hugging Face cache.
 
-            Author: Kristjan Pikhof
-            License: MIT
+            Created by Kristjan Pikhof
+            MIT License - Build \(buildVersion)
             """,
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
